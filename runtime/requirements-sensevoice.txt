@@ -1,0 +1,6 @@
+# Installed only after the user explicitly requests local model setup.
+# The plugin does not redistribute these packages or the SenseVoice weights.
+sherpa-onnx==1.12.40
+sherpa-onnx-core==1.12.40
+numpy==1.26.4
+imageio-ffmpeg==0.6.0

@@ -1,0 +1,12 @@
+{
+  "name": "voice-diary-unified",
+  "version": "0.3.0",
+  "license": "MIT",
+  "repository": "github:jem-code-sss/obsidian-voice-diary",
+  "private": true,
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node scripts/build.mjs && node --test tests/*.test.cjs"
+  },
+  "devDependencies": { "esbuild": "0.25.12" }
+}

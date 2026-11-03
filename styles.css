@@ -1,0 +1,24 @@
+.vdu-status { cursor: pointer; }
+.vdu-result { width:100%; min-height:45vh; resize:vertical; }
+.vdu-mic { position:fixed; right:22px; bottom:calc(85px + env(safe-area-inset-bottom)); width:54px; height:54px; border-radius:50%; z-index:100; background:var(--interactive-accent); color:var(--text-on-accent); box-shadow:0 3px 12px #0004; }
+.vdu-mic.is-recording { background:var(--color-red); }
+.vdu-mic svg { width:24px; height:24px; }
+.vdu-record-indicator { position:fixed; right:22px; bottom:calc(145px + env(safe-area-inset-bottom)); z-index:100; max-width:calc(100vw - 44px); border-radius:8px; background:var(--background-primary); color:var(--text-normal); padding:6px 10px; box-shadow:0 2px 8px #0003; font-size:13px; }
+.vdu-record-indicator:empty { display:none; }
+.vdu-settings .vdu-settings-summary { color:var(--text-muted); font-size:var(--font-ui-small); margin:8px 0 16px; }
+.vdu-settings .vdu-settings-nav { display:flex; flex-wrap:wrap; gap:8px; margin:0 0 18px; padding:0 0 14px; border-bottom:1px solid var(--background-modifier-border); }
+.vdu-settings .vdu-settings-tab { min-height:36px; padding:7px 12px; border-radius:8px; box-shadow:none; background:var(--background-secondary); color:var(--text-normal); font-size:var(--font-ui-small); cursor:pointer; }
+.vdu-settings .vdu-settings-tab.is-active { background:var(--interactive-accent); color:var(--text-on-accent); }
+.vdu-settings .vdu-settings-tab:focus-visible { outline:2px solid var(--interactive-accent); outline-offset:3px; }
+.vdu-settings .vdu-settings-section { border:1px solid var(--background-modifier-border); border-radius:12px; padding:18px; min-width:0; }
+.vdu-settings .vdu-settings-section[hidden] { display:none; }
+.vdu-settings .vdu-settings-section-title { margin:0 0 12px; font-size:var(--font-ui-medium); }
+.vdu-settings .vdu-settings-section > .setting-item:last-child { padding-bottom:0; }
+.vdu-settings .vdu-settings-note { color:var(--text-muted); font-size:var(--font-ui-small); line-height:1.6; overflow-wrap:anywhere; }
+.vdu-settings .setting-item-control textarea { width:100%; min-width:0; min-height:96px; resize:vertical; }
+@media (max-width:600px) {
+  .vdu-settings .vdu-settings-section { padding:14px; }
+  .vdu-settings .vdu-settings-section > .setting-item { flex-wrap:wrap; gap:12px; }
+  .vdu-settings .vdu-settings-section .setting-item-control { flex-wrap:wrap; max-width:100%; }
+  .vdu-settings .vdu-settings-section input[type="text"], .vdu-settings .vdu-settings-section input[type="password"] { max-width:100%; }
+}
