@@ -1,7 +1,7 @@
 {
   "runtime": ["sensevoice_runner.py", "setup_sensevoice.py", "setup-sensevoice.ps1", "requirements-sensevoice.txt"],
   "source": [
-    ".gitignore", "LICENSE", "README.md", "PRIVACY.md", "VALIDATION.md", "THIRD-PARTY-NOTICES.md",
+    ".gitignore", "LICENSE", "README.md", "README.zh-CN.md", "PRIVACY.md", "VALIDATION.md", "THIRD-PARTY-NOTICES.md",
     "manifest.json", "versions.json", "package.json", "package-lock.json", "styles.css", "install.cmd",
     "src/core.js", "src/correction.js", "src/main.js", "src/recorder.js", "src/sensevoice.js", "src/store.js", "src/runtime-assets.js",
     "runtime/sensevoice_runner.py", "runtime/setup_sensevoice.py", "runtime/setup-sensevoice.ps1", "runtime/requirements-sensevoice.txt",

@@ -36,7 +36,7 @@ foreach ($relative in $releaseFiles.source) {
     Copy-Item -LiteralPath $source -Destination $destination
 }
 $installParts = @($bundlePath)
-foreach ($document in @('README.md','PRIVACY.md','LICENSE','VALIDATION.md','docs')) {
+foreach ($document in @('README.md','README.zh-CN.md','PRIVACY.md','LICENSE','VALIDATION.md','docs')) {
     $documentPath = Join-Path $projectRoot $document
     if (Test-Path -LiteralPath $documentPath) { $installParts += $documentPath }
 }

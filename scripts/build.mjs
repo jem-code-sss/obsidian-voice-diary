@@ -20,7 +20,7 @@ await build({ entryPoints: ['src/main.js'], outfile: `${output}/main.js`, bundle
   loader:{'.py':'text'},
   external: ['obsidian', ...builtinModules, ...builtinModules.map(x => `node:${x}`)],
   legalComments: 'inline', banner: {js:'/* Voice Diary Processor; MIT. Third-party notices: THIRD-PARTY-NOTICES.md. */'} });
-for (const f of ['manifest.json', 'styles.css', 'README.md', 'PRIVACY.md', 'LICENSE', 'THIRD-PARTY-NOTICES.md']) await copyFile(f, `${output}/${f}`);
+for (const f of ['manifest.json', 'styles.css', 'README.md', 'README.zh-CN.md', 'PRIVACY.md', 'LICENSE', 'THIRD-PARTY-NOTICES.md']) await copyFile(f, `${output}/${f}`);
 await mkdir(`${output}/docs`,{recursive:true});
 for(const file of ['SETUP.md','MARKETPLACE.md'])await copyFile(`docs/${file}`,`${output}/docs/${file}`);
 const releaseFiles=JSON.parse(await readFile('scripts/release-files.json','utf8'));

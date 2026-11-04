@@ -1,89 +1,155 @@
 # Voice Diary Processor
 
-用 Windows 电脑上的 SenseVoice 将录音转成 Obsidian 笔记，按需开启文字 API 整理。版本：**0.3.0**。
+English | [简体中文](README.zh-CN.md)
 
-原始录音和成品笔记分别保存，路径由你指定。不填写 API 配置、或关闭 API 开关时，只进行本地识别。
+Turn recordings into Obsidian notes on a Windows computer using local SenseVoice speech recognition. Optionally use a text API to clean up the transcript, or keep the entire transcription workflow offline.
 
-## 适用设备
+Version: **0.3.1**.
 
-- **Windows x64 桌面端**：录音、SenseVoiceSmall INT8 CPU 转写、可选文字 API 整理。
-- **手机配套**：[Voice Diary Recorder](https://github.com/jem-code-sss/obsidian-voice-diary-recorder) 单独安装，只录音并保存文件，通过同步工具交给电脑处理。录音时保持 Obsidian 在前台。本插件为桌面专用，不能代替手机录音插件。
-- 目前未承诺 macOS、Linux、Windows ARM 或手机端本地转写可用。
+Choose separate vault folders for original recordings and finished notes. Pair this desktop plugin with [Voice Diary Recorder](https://github.com/jem-code-sss/obsidian-voice-diary-recorder) to record on a phone and process the files on your computer.
 
-插件需要 Obsidian 1.8.7 或更新版本。无需显卡；首次手动准备识别环境需要联网和足够磁盘空间，之后本地转写可以离线使用。必备软件、Syncthing 配置与完整步骤见 [安装与同步教程](docs/SETUP.md)。
+## Requirements
 
-## 安装
+| Component | Requirements |
+| --- | --- |
+| Desktop processing | Windows x64, Obsidian 1.8.7 or newer, and Voice Diary Processor. |
+| Local speech recognition | Python 3.10–3.12, SenseVoiceSmall INT8, sherpa-onnx, NumPy, and imageio-ffmpeg. Prepare these manually as described below. FFmpeg is provided by the specified dependency; no GPU or Node.js is needed for normal use. |
+| Optional phone recording | Obsidian and the separate Voice Diary Recorder plugin. The phone does not need Python, a speech model, or an API Key. Keep Obsidian in the foreground while recording. |
+| Optional device synchronization | Syncthing, Obsidian Sync, or another reliable tool that synchronizes vault files. No synchronization software is needed when using only one computer. |
+| Optional text cleanup | A compatible text API endpoint of your choice. It is disabled by default on new installations. |
 
-1. 在 [0.3.0 Release](https://github.com/jem-code-sss/obsidian-voice-diary/releases/tag/0.3.0) 下载 `voice-diary-unified-v0.3.0.zip`，完整解压。
-2. 正常退出 Obsidian，把包内 `voice-diary-unified` 文件夹复制到仓库的 `.obsidian/plugins/` 下。自定义配置目录的用户应使用对应的 `plugins` 目录。
-3. 重新打开 Obsidian，在「第三方插件」中启用 **Voice Diary Processor**。
-4. 按下文手动准备本地识别环境，在「本地识别」应用其目录；已有兼容环境可直接复用。
-5. 在「录音与路径」确认录音和笔记目录，再到「任务与恢复」启用本电脑自动处理，录一段短音频进行验证。
+The Processor is desktop-only. Local transcription is currently supported on Windows x64; macOS, Linux, Windows ARM, and mobile transcription have not been verified. Initial environment preparation needs internet access and sufficient disk space. After preparation, local transcription works offline.
 
-升级时覆盖插件程序文件即可。现有路径、API 开关和任务记录继续保留，已有录音和笔记不会迁移到新默认路径。建议只在一台电脑开启自动处理。
+## Install
 
-此版本准备申请社区目录，尚不代表已通过审核。正式提交步骤见 [上架准备说明](docs/MARKETPLACE.md)。市场发布同时提供 `main.js`、`manifest.json`、`styles.css` 三个标准附件；手动 ZIP 仅是另一种安装方式。
+Install **Voice Diary Processor** from its [official community directory page](https://community.obsidian.md/plugins/voice-diary-unified) or Obsidian's community plugin settings. Check the official page for the current listing and version review status.
 
-## 手动准备本地识别
+To install manually:
 
-插件不会安装、下载或更新依赖。「本地识别」的资源按钮只在浏览器打开上游模型和手动准备说明。用户可从上游自行准备兼容环境，或下载本项目源码 ZIP，在 Obsidian 外自行执行附带的 Windows 准备脚本：
+1. Download `voice-diary-unified-v0.3.1.zip` from the [0.3.1 release](https://github.com/jem-code-sss/obsidian-voice-diary/releases/tag/0.3.1) and extract it.
+2. Close Obsidian normally. Copy the extracted `voice-diary-unified` folder into your vault's `.obsidian/plugins/` directory. If you use a custom configuration directory, use its `plugins` directory instead.
+3. Reopen Obsidian and enable **Voice Diary Processor** in community plugin settings.
+4. Prepare the local recognition environment below, then apply its directory in the plugin's local recognition settings.
+5. Choose the recording and note folders. Enable automatic processing under tasks and recovery, and verify the result with a short recording.
+
+Community releases provide `main.js`, `manifest.json`, and `styles.css` as standard release assets. The Python runner is embedded in `main.js`, so a community installation does not need a separately copied `runtime/` folder. The model and Python environment must still be prepared manually. Manual ZIP assets are provided for users who install outside the directory.
+
+### Upgrade from the earlier combined plugin
+
+For phone and desktop use, install **Voice Diary Recorder on the phone first**. Confirm that it uses the same recording folder as the existing setup, then test saving and synchronizing a short recording. The Recorder can migrate only the old phone recording folder when it has no existing settings of its own.
+
+Then upgrade the desktop plugin to Voice Diary Processor. It retains the plugin ID `voice-diary-unified` to preserve existing desktop settings and task records. The Processor is now desktop-only; do not depend on it for phone recording. Disable the old phone recording entry to avoid having two microphone buttons. When synchronizing `.obsidian`, verify the phone installation before replacing the combined plugin on the desktop.
+
+Upgrading does not move existing recordings or notes, reset configured paths, or automatically rewrite finished notes. Enable automatic processing on only one computer.
+
+## Prepare local SenseVoice recognition manually
+
+The plugin does not install, download, or update its dependencies. Its resource buttons only open upstream resources and preparation instructions in a browser.
+
+You can prepare a compatible environment yourself, or run the provided setup script **outside Obsidian**:
+
+1. Download and extract `voice-diary-unified-v0.3.1-source.zip` from the [0.3.1 release](https://github.com/jem-code-sss/obsidian-voice-diary/releases/tag/0.3.1).
+2. Open PowerShell in the extracted source root, where the `runtime` folder is located.
+3. Review the setup files, then run:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File runtime/setup-sensevoice.ps1
 ```
 
-该脚本由用户手动执行，读取同目录的准备程序与固定依赖清单，从 Python 官网、PyPI 与官方模型发布下载资源，核对模型四个文件的 SHA-256，并运行官方短样例。不读取录音、笔记或 API Key；它不由插件启动。完成后回到插件点击「检查并准备」。
+The script is started by you, not by the plugin. It uses the adjacent setup program and pinned requirements to obtain Python, dependencies, and the model from their official sources. It verifies the four model files with SHA-256 and runs the official short test sample. It does not read your recordings, notes, or API Key, and it does not enable the text API.
 
-脚本默认将环境放在 `%LOCALAPPDATA%\voice-diary-unified\sensevoice`，不会进入仓库同步。此时插件安装目录输入框留空即可；已有自选环境不会被覆盖。手动脚本优先复用兼容的本机 Python 3.10–3.12；缺少时安装官方 Python 3.12，按用户安装、不添加 PATH 或文件关联，但可能注册为本机可发现的 Python 安装。自选位置可给脚本传入 `-Root '<本机目录>'`，并在插件中应用同一目录。
+By default, the environment is placed in `%LOCALAPPDATA%\voice-diary-unified\sensevoice`, outside the vault. Leave the environment directory setting blank to use this default. The script first tries a compatible installed Python 3.10–3.12. If none is available, it installs official Python 3.12 for the current user without adding it to PATH or associating files; it may register the Python installation for local discovery.
 
-资源来源：
+To choose another location, pass `-Root '<local-directory>'` to the setup script, then apply that same directory in the plugin. An existing user-selected environment is not overwritten by the plugin. After preparation, click **Check and prepare** (`检查并准备`) in local recognition settings to validate the environment and load the model.
 
-| 资源 | 上游 |
+### Use an existing compatible environment
+
+The selected directory must contain:
+
+```text
+.venv/Scripts/python.exe
+models/model.int8.onnx
+models/tokens.txt
+models/zh.wav
+```
+
+The Python environment must have sherpa-onnx, NumPy, and imageio-ffmpeg installed. Copy the upstream package's `test_wavs/zh.wav` to `models/zh.wav` if needed, and retain its license. Applying a path tests actual recognition rather than only checking filenames. Copying another computer's `.venv` may fail because it can refer to an absolute base Python path.
+
+### Upstream resources and licenses
+
+| Resource | Official source |
 | --- | --- |
-| SenseVoice 原始项目与模型说明 | [SenseVoice](https://github.com/FunAudioLLM/SenseVoice)、[SenseVoiceSmall 模型卡](https://huggingface.co/FunAudioLLM/SenseVoiceSmall) |
-| 插件使用的 ONNX INT8 模型包 | [sherpa-onnx 官方模型说明](https://k2-fsa.github.io/sherpa/onnx/sense-voice/pretrained.html)、[上游模型下载](https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17.tar.bz2) |
-| Windows Python | [Python 官网](https://www.python.org/downloads/windows/) |
-| Python 运行依赖 | PyPI 上的 [sherpa-onnx](https://pypi.org/project/sherpa-onnx/)、[NumPy](https://pypi.org/project/numpy/)、[imageio-ffmpeg](https://pypi.org/project/imageio-ffmpeg/) |
+| Original SenseVoice project and model information | [SenseVoice](https://github.com/FunAudioLLM/SenseVoice) and [SenseVoiceSmall model card](https://huggingface.co/FunAudioLLM/SenseVoiceSmall). |
+| Compatible ONNX INT8 model used by this plugin | [sherpa-onnx pretrained model documentation](https://k2-fsa.github.io/sherpa/onnx/sense-voice/pretrained.html) and [upstream model download](https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17.tar.bz2). |
+| Windows Python | [Python downloads](https://www.python.org/downloads/windows/). |
+| Python dependencies | [sherpa-onnx](https://pypi.org/project/sherpa-onnx/), [NumPy](https://pypi.org/project/numpy/), and [imageio-ffmpeg](https://pypi.org/project/imageio-ffmpeg/) on PyPI. |
 
-SenseVoice 原开发项目与 sherpa-onnx 的 ONNX 转制发布是不同来源；插件使用后者提供的兼容模型包。模型、Python 和第三方依赖不包含在插件 ZIP 或本仓库中，其许可独立于插件的 MIT 许可，见 [第三方声明](THIRD-PARTY-NOTICES.md)。
+The original SenseVoice project and sherpa-onnx's converted ONNX release are separate sources. This plugin uses the latter's compatible model package. Models, Python, and these dependencies are not redistributed in the plugin ZIP or source repository. Their licenses are separate from this plugin's MIT license; see [third-party notices](THIRD-PARTY-NOTICES.md).
 
-已有环境可直接在「本地识别」中填写本机安装目录并点击「应用路径」。目录应包含 `.venv/Scripts/python.exe`、`models/model.int8.onnx`、`models/tokens.txt` 和 `models/zh.wav`，Python 环境内需已安装上述依赖及其 FFmpeg。原模型包中的 `test_wavs/zh.wav` 可复制为 `models/zh.wav`。应用路径会验证实际识别，而不只检查文件名。
+## Settings and processing
 
-准备成功后，关闭文字 API、断开网络也可转写本地录音。离线复用依赖有效的 Python 环境；直接把另一台电脑的 `.venv` 复制过来，可能因基础 Python 的绝对路径而失效。
-
-## 五个设置分区
-
-| 分区 | 用途 |
+| Section | Purpose |
 | --- | --- |
-| 录音与路径 | 新装默认录音目录 `Voice Diary/Recordings`、成品目录 `Voice Diary/Notes`；均为仓库内相对路径，输入后点击「应用」。手机与电脑的录音目录须一致。 |
-| 本地识别 | 官方模型与手动准备说明链接、已有环境目录、检查模型、识别语言。 |
-| API 整理 | 独立开关、完整接口地址、模型名和本机凭据；自然整理、忠实校对或自定义提示词。 |
-| 文字处理 | 对笔记选区校对、翻译、润色、总结等，结果先预览，确认后应用。需要文字 API 已启用且配置完整。 |
-| 任务与恢复 | 自动处理开关、进度、失败重试、接口变更后重新整理及旧插件配置迁移。 |
+| Recording and paths | Choose separate vault-relative recording and finished-note folders. Defaults are `Voice Diary/Recordings` and `Voice Diary/Notes`. Click **Apply** after editing a path. |
+| Local recognition | Open upstream resources, apply a prepared environment directory, check the model, and choose the recognition language. |
+| API cleanup | Enable or disable the optional text API, configure the complete endpoint and model, store device-local credentials, and select natural cleanup, faithful correction, or a custom prompt. |
+| Text processing | Correct, translate, polish, or summarize selected note text. Preview the result before applying it. Requires the text API to be enabled and configured. |
+| Tasks and recovery | Enable automatic processing, inspect progress, retry failures, retry with changed API settings, or migrate an older desktop configuration. |
 
-更改默认目录只影响之后创建的录音或任务；已有文件保留原位，处理中的任务保留已确定的目标位置。
+Paths must be relative to the vault. Changing a path affects future recordings or tasks and does not move history. Tasks already in progress keep their assigned destination.
 
-API 关闭或必要配置未填完整时，成品保存本地转写原文，并带 `local_transcribed` 属性。API 启用且配置完整时，插件将转写文字发送给你指定的兼容接口；长稿分段整理，只引用同一录音的相邻转写作为上下文，不读取通讯录、常用词表或其他笔记。数字、人名和重要事实仍需对照录音核对。
+Automatic processing skips existing recordings the first time it is enabled. To process older audio, use the transcription command in the audio file's menu. The plugin observes vault audio entries in the configured recording folder, waits for incoming files to become stable, and processes them one at a time. It retains original audio and uses source fingerprints to avoid duplicates. Existing finished notes and manual edits are not automatically overwritten.
 
-关闭 API 不会清空已填配置；已发出的请求无法撤回，后续片段停止调用。已有成品不会因为重新开启 API 就自动重写。连接测试只在点击时发送简短测试文字。
+### Local-only mode and optional API cleanup
 
-## 手机与电脑同步
+The text API is **off by default** on new installations. With the API off, or with required configuration missing, the finished note contains the local transcript and a `local_transcribed` property. No API account or Key is needed for this mode.
 
-手机先安装 [Voice Diary Recorder](https://github.com/jem-code-sss/obsidian-voice-diary-recorder)，电脑安装本插件。主教程使用 **Syncthing**，也可换成 Obsidian Sync 或其他可靠同步工具；插件本身不提供同步服务。只在一台电脑录音与识别时不需要同步软件。
+When you explicitly enable and configure the API, the plugin sends transcript text and instructions to your chosen compatible endpoint. Long recordings are divided into sections; context is limited to neighboring transcript sections from the same recording. It does not read contacts, a personal vocabulary list, or unrelated notes, and it does not send original audio. Review names, numbers, and important facts against the recording.
 
-手机先保存录音，电脑同步收到后等待文件稳定，再串行处理并保存笔记。成品及音频通过原同步工具回到手机。手机离线时也能在前台录音；待文件保存成功再离开应用。
+Selection actions send only the selected text and the relevant instructions. A connection test sends a short test message only when clicked. Required credentials are sent to the configured service as request credentials. Its pricing, terms, and retention policies are determined by your chosen provider.
 
-手机配套插件锁屏、切后台或麦克风中断时会结束本段并尝试保存，提示短暂显示；返回前台后需重新开始。系统冻结或强制结束应用时可能来不及保存，配套插件不保证后台持续录音。
+Turning the API off retains its saved configuration. It stops later requests but cannot retract a request already sent. Turning it back on does not automatically rewrite existing notes. To verify offline operation, disable the API and transcribe a short recording after preparing the local environment.
 
-## 文件保护与隐私
+## Record on a phone and synchronize
 
-自动处理首次开启会跳过已有录音。需处理历史文件时，使用音频文件菜单中的转写命令。插件保留原始音频，按来源指纹避免重复处理；已完成笔记和人工修改的历史稿不会被自动覆盖。
+Install [Voice Diary Recorder](https://github.com/jem-code-sss/obsidian-voice-diary-recorder) on the phone and this Processor on the Windows computer. Syncthing is one option, not a requirement: Obsidian Sync or another reliable vault synchronization tool can also transfer the files. The plugins do not provide a synchronization service.
 
-本地识别使用临时音频和结果文件，正常结束、取消或失败后清理；程序崩溃或系统断电可能遗留临时文件。本机任务检查点含转写正文，API Key 以明文保存在仓库之外的设备数据目录，不能视作加密保管。为兼容市场三文件安装，插件仅将随 `main.js` 内置的识别 runner 释放到 `%LOCALAPPDATA%\voice-diary-unified\runtime-cache\<version>`，校验内容后使用；不会联网下载或执行更新的插件代码。详细数据流见 [隐私说明](PRIVACY.md)。
+1. Configure the same vault-relative recording folder on both devices. Their absolute vault paths may differ.
+2. Synchronize both the recordings and the finished-note folders in both directions. Ensure that audio files are not excluded. Avoid using multiple synchronization tools to manage the same folders.
+3. Install each plugin on its intended device. Keep the Python environment, API credentials, and desktop task data outside the shared folders.
+4. On the phone, keep Obsidian in the foreground, record a short sample, stop, and play it back. Wait for the saved file to synchronize.
+5. Keep the computer and Obsidian running, with automatic processing enabled on that computer only. After the audio is stable, the Processor creates a `-transcript.md` note with a source audio link.
+6. Wait for synchronization back to the phone, then check the note and audio playback.
 
-## 开发与验证
+For Syncthing, start with its [official downloads](https://syncthing.net/downloads/) and [getting-started guide](https://docs.syncthing.net/intro/getting-started). Choose a maintained, compatible client for your phone: the [old official Android application was discontinued](https://github.com/syncthing/syncthing-android#discontinued). A detailed Chinese walkthrough is available in [installation and synchronization](docs/SETUP.md).
 
-构建与测试建议使用 Node.js 22 或更新版本。以下命令在项目根目录执行：
+The phone can record offline in the foreground and synchronize after reconnecting. Save successfully before leaving the app. Locking the phone, switching apps, or a microphone interruption ends the current segment and attempts to save it; the notice disappears shortly afterward. Start a new recording after returning. The Recorder does not support continuous background recording, and a system freeze or forced shutdown may prevent saving.
+
+## Privacy, external files, and process execution
+
+Original recordings and finished notes remain in your selected vault folders and follow your synchronization and backup settings. The plugin has no telemetry.
+
+Desktop configuration, API credentials, and task checkpoints are stored **outside the vault**, under the current user's application data directory. A task checkpoint can contain transcript text and processed sections. On Windows, the device file is:
+
+```text
+%LOCALAPPDATA%\voice-diary-unified\<vault-id>\device.json
+```
+
+The vault identifier is derived from the local vault path; it is not an access token or a guarantee of anonymity. API Keys, task JSON, and backups are stored in plaintext, not in a system credential vault. Do not synchronize or share these files.
+
+Direct filesystem access is used for this device data, its backups, the configured external recognition environment, runner caching, and task-specific temporary audio and result files. The plugin extracts its embedded Python runner to `%LOCALAPPDATA%\voice-diary-unified\runtime-cache\<version>`, verifies the content, and uses that local copy. It does not download updated plugin code. Normal completion, failure, and cancellation clean up task temporary files; a crash or power loss can leave them behind.
+
+The Processor starts the Python executable from the local environment you selected, with fixed runner arguments and no command shell. That local runner uses FFmpeg and sherpa-onnx to read and transcribe the audio. On cancellation, Windows may run its built-in process termination utility to stop only the recognition process tree started by the plugin. These capabilities support local recognition; the plugin does not run the dependency installer or arbitrary shell commands supplied by a note. Only use a recognition environment you trust.
+
+Clipboard access only writes the displayed text-processing result when you click **Copy** in its preview. The plugin does not read the clipboard. The separate Recorder uses device-local storage for its recording folder; desktop task state is stored in the external device file described above.
+
+Local recognition runs on the computer without an online transcription service. Optional text API requests occur only under the conditions described above. Opening a resource link uses your browser; a setup script you manually launch contacts official Python, PyPI, and GitHub download services. The setup process does not upload your recordings or notes. Your synchronization tool, Obsidian, the operating system, and other plugins have their own network behavior.
+
+Uninstalling does not automatically remove recordings, notes, the external recognition environment, or device-local data. See [PRIVACY.md](PRIVACY.md) for the detailed Chinese data-flow and cleanup information.
+
+## Development and verification
+
+Developers need Node.js 22 or newer. From the source root:
 
 ```powershell
 npm ci
@@ -91,28 +157,28 @@ npm test
 npm run build
 ```
 
-构建输出为 `dist/voice-diary-unified/`，可按上述手动安装方法复制到测试仓库。Node 测试使用模拟宿主、HTTP 和进程，不调用真实付费接口。
+The build is written to `dist/voice-diary-unified/`. Node tests use simulated host, HTTP, and process behavior; they do not call a paid text API.
 
-Python runner 的单元测试需要 NumPy，并应使用已准备好的识别环境中的 Python：
-
-```powershell
-& '<SenseVoice目录>\.venv\Scripts\python.exe' -B -m unittest discover -s tests -p 'test_*.py' -v
-```
-
-Windows 下载引导的离线回归使用系统 PowerShell 5.1：
+Python runner tests require NumPy. Use the prepared environment's Python:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/test_setup_sensevoice.ps1 -PythonPath '<SenseVoice目录>\.venv\Scripts\python.exe'
+& '<SenseVoice-directory>\.venv\Scripts\python.exe' -B -m unittest discover -s tests -p 'test_*.py' -v
 ```
 
-测试范围、实测与待验事项见 [验证记录](VALIDATION.md)。可在 [Issues](https://github.com/jem-code-sss/obsidian-voice-diary/issues) 反馈问题，请说明版本、系统、出错步骤及安全错误提示，避免附带 API Key、完整本机路径、`device.json` 或私人录音。
+The offline Windows setup regression tests use PowerShell 5.1:
 
-## 已知边界
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/test_setup_sensevoice.ps1 -PythonPath '<SenseVoice-directory>\.venv\Scripts\python.exe'
+```
 
-- 本插件仅桌面加载；手机配套插件不支持锁屏或切后台持续采集，也不进行识别或 API 整理。
-- 识别为离线文件处理，不是实时字幕；每段任务会启动 Python 并加载模型。
-- 环境噪声、口音、专有名词和长句仍可能误识别。全零静音过滤不等于完整语音活动检测。
-- 本机任务状态和 Key 不随仓库同步；更换电脑后需重新配置。不要在多台电脑同时自动处理同一批录音。
-- 下载需能访问上游服务；上游服务、代理和本机权限可能影响首次准备。
+See [validation notes](VALIDATION.md) for coverage, local checks, and remaining device tests. Report issues in [GitHub Issues](https://github.com/jem-code-sss/obsidian-voice-diary/issues) with the version, system, reproduction steps, and safe error message. Do not attach API Keys, complete personal paths, `device.json`, or private recordings.
 
-插件代码采用 [MIT 许可](LICENSE)。SenseVoice 及其他外部组件适用各自许可，见 [第三方声明](THIRD-PARTY-NOTICES.md)。
+## Limitations and license
+
+- Transcription processes saved files, rather than providing live captions. Each task starts Python and loads the model.
+- Noise, accents, proper nouns, and long sentences can still cause recognition errors. Rejecting completely silent input is not full voice activity detection.
+- Device-local task state and credentials do not synchronize. Prepare a new environment and configuration when moving to another computer.
+- Local preparation depends on access to the upstream services and on local permissions.
+- Mobile recording is a separate foreground-only function; the phone does not run local transcription or API cleanup.
+
+Plugin code is licensed under [MIT](LICENSE). SenseVoice models and external components retain their own licenses; see [third-party notices](THIRD-PARTY-NOTICES.md).
