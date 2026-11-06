@@ -4,7 +4,7 @@ English | [简体中文](README.zh-CN.md)
 
 Turn recordings into Obsidian notes on a Windows computer using local SenseVoice speech recognition. Optionally use a text API to clean up the transcript, or keep the entire transcription workflow offline.
 
-Version: **0.3.1**.
+Version: **0.3.2**.
 
 Choose separate vault folders for original recordings and finished notes. Pair this desktop plugin with [Voice Diary Recorder](https://github.com/jem-code-sss/obsidian-voice-diary-recorder) to record on a phone and process the files on your computer.
 
@@ -26,7 +26,7 @@ Install **Voice Diary Processor** from its [official community directory page](h
 
 To install manually:
 
-1. Download `voice-diary-unified-v0.3.1.zip` from the [0.3.1 release](https://github.com/jem-code-sss/obsidian-voice-diary/releases/tag/0.3.1) and extract it.
+1. Download `voice-diary-unified-v0.3.2.zip` from the [0.3.2 release](https://github.com/jem-code-sss/obsidian-voice-diary/releases/tag/0.3.2) and extract it.
 2. Close Obsidian normally. Copy the extracted `voice-diary-unified` folder into your vault's `.obsidian/plugins/` directory. If you use a custom configuration directory, use its `plugins` directory instead.
 3. Reopen Obsidian and enable **Voice Diary Processor** in community plugin settings.
 4. Prepare the local recognition environment below, then apply its directory in the plugin's local recognition settings.
@@ -48,7 +48,7 @@ The plugin does not install, download, or update its dependencies. Its resource 
 
 You can prepare a compatible environment yourself, or run the provided setup script **outside Obsidian**:
 
-1. Download and extract `voice-diary-unified-v0.3.1-source.zip` from the [0.3.1 release](https://github.com/jem-code-sss/obsidian-voice-diary/releases/tag/0.3.1).
+1. Download and extract `voice-diary-unified-v0.3.2-source.zip` from the [0.3.2 release](https://github.com/jem-code-sss/obsidian-voice-diary/releases/tag/0.3.2).
 2. Open PowerShell in the extracted source root, where the `runtime` folder is located.
 3. Review the setup files, then run:
 
@@ -90,19 +90,27 @@ The original SenseVoice project and sherpa-onnx's converted ONNX release are sep
 
 | Section | Purpose |
 | --- | --- |
-| Recording and paths | Choose separate vault-relative recording and finished-note folders. Defaults are `Voice Diary/Recordings` and `Voice Diary/Notes`. Click **Apply** after editing a path. |
+| Recording and paths | Choose separate vault-relative recording and finished-note folders, plus note naming and whether to include the year. Folder defaults are `Voice Diary/Recordings` and `Voice Diary/Notes`. Click **Apply** after editing a path. |
 | Local recognition | Open upstream resources, apply a prepared environment directory, check the model, and choose the recognition language. |
-| API cleanup | Enable or disable the optional text API, configure the complete endpoint and model, store device-local credentials, and select natural cleanup, faithful correction, or a custom prompt. |
+| API cleanup | Apply an endpoint, model, and device-local Key together, explicitly enable the optional API, and select natural cleanup, faithful correction, or a custom prompt. |
 | Text processing | Correct, translate, polish, or summarize selected note text. Preview the result before applying it. Requires the text API to be enabled and configured. |
 | Tasks and recovery | Enable automatic processing, inspect progress, retry failures, retry with changed API settings, or migrate an older desktop configuration. |
 
 Paths must be relative to the vault. Changing a path affects future recordings or tasks and does not move history. Tasks already in progress keep their assigned destination.
+
+### Diary filenames and dates
+
+New tasks default to `MM.DD日记_主题.md`, for example `12.13日记_出游.md`. Under **Finished-note naming** (`成品笔记命名`), you can keep the original audio filename plus `-transcript` instead. **Include year in title** (`标题包含年份`) changes the diary form to `2026.12.13日记_出游.md`. The topic is extracted locally from this recording's text without an extra API request. A filename conflict gets a numbered alternative; it does not overwrite an existing note.
+
+A diary day runs from 04:00 to the next day's 03:59. A recording started before 04:00 belongs to the previous day; one started at or after 04:00 belongs to the current day. New recordings put their **start time** in the original `voice-YYYY-MM-DD-HHmmss-…` filename, so crossing 04:00 while recording, delayed saving, retries, and synchronization do not change that source date. Source filenames containing a date but no time keep that date. For other audio, the Processor uses file creation time, falling back to processing time if unavailable; creation time can depend on the import or synchronization tool. Naming applies only to new tasks. Existing notes and destinations already assigned to in-progress tasks are preserved.
 
 Automatic processing skips existing recordings the first time it is enabled. To process older audio, use the transcription command in the audio file's menu. The plugin observes vault audio entries in the configured recording folder, waits for incoming files to become stable, and processes them one at a time. It retains original audio and uses source fingerprints to avoid duplicates. Existing finished notes and manual edits are not automatically overwritten.
 
 ### Local-only mode and optional API cleanup
 
 The text API is **off by default** on new installations. With the API off, or with required configuration missing, the finished note contains the local transcript and a `local_transcribed` property. No API account or Key is needed for this mode.
+
+Endpoint, model, and Key inputs are drafts until you click **Apply API configuration** (`应用接口配置`). Apply them together while no processing task or API request is running. Applying configuration turns the API off; check the destination and credentials, then turn it on manually. Remote endpoints must use HTTPS. HTTP is allowed only for a loopback service on this computer. If the endpoint's origin (scheme, host, or port) changes and the draft still contains the previous service's Key, that Key is cleared. Enter the new service's own credentials and apply again before enabling it.
 
 When you explicitly enable and configure the API, the plugin sends transcript text and instructions to your chosen compatible endpoint. Long recordings are divided into sections; context is limited to neighboring transcript sections from the same recording. It does not read contacts, a personal vocabulary list, or unrelated notes, and it does not send original audio. Review names, numbers, and important facts against the recording.
 
@@ -118,12 +126,14 @@ Install [Voice Diary Recorder](https://github.com/jem-code-sss/obsidian-voice-di
 2. Synchronize both the recordings and the finished-note folders in both directions. Ensure that audio files are not excluded. Avoid using multiple synchronization tools to manage the same folders.
 3. Install each plugin on its intended device. Keep the Python environment, API credentials, and desktop task data outside the shared folders.
 4. On the phone, keep Obsidian in the foreground, record a short sample, stop, and play it back. Wait for the saved file to synchronize.
-5. Keep the computer and Obsidian running, with automatic processing enabled on that computer only. After the audio is stable, the Processor creates a `-transcript.md` note with a source audio link.
+5. Keep the computer and Obsidian running, with automatic processing enabled on that computer only. After the audio is stable, the Processor creates a diary note such as `12.13日记_出游.md` with a source audio link, using your selected naming mode.
 6. Wait for synchronization back to the phone, then check the note and audio playback.
 
 For Syncthing, start with its [official downloads](https://syncthing.net/downloads/) and [getting-started guide](https://docs.syncthing.net/intro/getting-started). Choose a maintained, compatible client for your phone: the [old official Android application was discontinued](https://github.com/syncthing/syncthing-android#discontinued). A detailed Chinese walkthrough is available in [installation and synchronization](docs/SETUP.md).
 
 The phone can record offline in the foreground and synchronize after reconnecting. Save successfully before leaving the app. Locking the phone, switching apps, or a microphone interruption ends the current segment and attempts to save it; the notice disappears shortly afterward. Start a new recording after returning. The Recorder does not support continuous background recording, and a system freeze or forced shutdown may prevent saving.
+
+Both recording entry points verify saved bytes. If a failed write leaves a truncated file or the target is occupied by different content, the plugin preserves that file and saves the complete recording under a new name containing a full UUID. Check for the complete replacement before removing an abnormal file. A recording that still cannot be saved remains in memory for retry; keep Obsidian open until saving succeeds.
 
 ## Privacy, external files, and process execution
 
@@ -137,9 +147,13 @@ Desktop configuration, API credentials, and task checkpoints are stored **outsid
 
 The vault identifier is derived from the local vault path; it is not an access token or a guarantee of anonymity. API Keys, task JSON, and backups are stored in plaintext, not in a system credential vault. Do not synchronize or share these files.
 
+Device storage uses a short-lived transaction guard for lock ownership changes, checks the lock's file identity and random owner token before writing, and refuses symbolic links, directory links, and state files with multiple hard links. State and backup files use randomly named temporary files created exclusively, then atomic replacement. These checks reduce accidental cross-window writes and unsafe file replacement; they do not isolate the plugin from a compromised operating system or another program running as the same user. A hard crash during a guard transaction can rarely leave `device.guard` behind and block startup. Close **all Obsidian windows**, confirm that no Obsidian process is running, and inspect the device data directory before handling a confirmed leftover guard. Do not remove a guard belonging to a running process.
+
 Direct filesystem access is used for this device data, its backups, the configured external recognition environment, runner caching, and task-specific temporary audio and result files. The plugin extracts its embedded Python runner to `%LOCALAPPDATA%\voice-diary-unified\runtime-cache\<version>`, verifies the content, and uses that local copy. It does not download updated plugin code. Normal completion, failure, and cancellation clean up task temporary files; a crash or power loss can leave them behind.
 
 The Processor starts the Python executable from the local environment you selected, with fixed runner arguments and no command shell. That local runner uses FFmpeg and sherpa-onnx to read and transcribe the audio. On cancellation, Windows may run its built-in process termination utility to stop only the recognition process tree started by the plugin. These capabilities support local recognition; the plugin does not run the dependency installer or arbitrary shell commands supplied by a note. Only use a recognition environment you trust.
+
+The decoder accepts supported self-contained audio containers and uses container and audio-decoder allowlists during probing and conversion, without enabling unneeded video or image decoders. Playlists and manifests are rejected, and MOV external media tracks are disabled, to prevent a recording from directing decoding to another local file or network resource. Renaming a playlist to an audio extension does not make it supported. FFmpeg and the recognition environment remain external native dependencies; these restrictions do not establish that those dependencies are free of vulnerabilities. Keep the environment trusted and maintained.
 
 Clipboard access only writes the displayed text-processing result when you click **Copy** in its preview. The plugin does not read the clipboard. The separate Recorder uses device-local storage for its recording folder; desktop task state is stored in the external device file described above.
 
@@ -178,6 +192,7 @@ See [validation notes](VALIDATION.md) for coverage, local checks, and remaining 
 - Transcription processes saved files, rather than providing live captions. Each task starts Python and loads the model.
 - Noise, accents, proper nouns, and long sentences can still cause recognition errors. Rejecting completely silent input is not full voice activity detection.
 - Device-local task state and credentials do not synchronize. Prepare a new environment and configuration when moving to another computer.
+- If local pending content and recovery checkpoints are completely lost, an older source-marked note may be a manual edit or a historical partial write. The plugin preserves it; check against the recording and save a separate replacement if needed.
 - Local preparation depends on access to the upstream services and on local permissions.
 - Mobile recording is a separate foreground-only function; the phone does not run local transcription or API cleanup.
 

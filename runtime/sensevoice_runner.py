@@ -13,6 +13,32 @@ import wave
 
 MODEL = 'SenseVoiceSmall INT8'
 LANGUAGES = ('auto', 'zh', 'en', 'ja', 'ko', 'yue')
+# Only self-contained recording containers may be probed. A protocol allowlist
+# alone is insufficient: DASH can use the allowed file protocol to open another
+# local recording (including a Windows network share) from its manifest.
+AUDIO_FORMATS = 'wav,mp3,mov,mp4,m4a,3gp,3g2,mj2,matroska,webm,ogg,flac,aac'
+# -vn only suppresses video output; stream-info probing can still open video
+# decoders for tracks or cover art. Restrict decoder opening before input probing.
+# Keep ordinary phone/browser recordings, lossless audio and common WAV PCM.
+# This reduces decoder exposure; it does not replace upstream security updates.
+AUDIO_CODECS = ','.join((
+    'aac', 'aac_fixed', 'aac_latm', 'alac',
+    'mp1', 'mp1float', 'mp2', 'mp2float', 'mp3', 'mp3float',
+    'mp3adu', 'mp3adufloat', 'mp3on4', 'mp3on4float',
+    'flac', 'opus', 'libopus', 'vorbis', 'libvorbis',
+    'amrnb', 'amrwb', 'libopencore_amrnb', 'libopencore_amrwb',
+    'gsm', 'gsm_ms', 'libgsm', 'libgsm_ms', 'speex', 'libspeex',
+    'pcm_alaw', 'pcm_mulaw', 'pcm_f16le', 'pcm_f24le',
+    'pcm_f32be', 'pcm_f32le', 'pcm_f64be', 'pcm_f64le',
+    'pcm_s8', 'pcm_u8', 'pcm_s16be', 'pcm_s16le', 'pcm_u16be', 'pcm_u16le',
+    'pcm_s24be', 'pcm_s24le', 'pcm_u24be', 'pcm_u24le',
+    'pcm_s32be', 'pcm_s32le', 'pcm_u32be', 'pcm_u32le', 'pcm_s64be', 'pcm_s64le',
+    'pcm_s8_planar', 'pcm_s16be_planar', 'pcm_s16le_planar',
+    'pcm_s24le_planar', 'pcm_s32le_planar',
+    'adpcm_ima_wav', 'adpcm_ms', 'adpcm_ima_qt',
+    'ac3', 'ac3_fixed', 'eac3', 'g722', 'g726', 'g726le',
+))
+MOV_ATOMS = frozenset((b'ftyp', b'moov', b'mdat', b'wide', b'free', b'skip', b'uuid', b'styp'))
 CANCELLED = threading.Event()
 PROCESS_LOCK = threading.Lock()
 CONVERTER = None
@@ -137,15 +163,31 @@ def ffmpeg_executable():
     return candidates[0]
 
 
+def container_options(source):
+    # These are MOV-specific options: passing them to WAV/MP3 causes FFmpeg to
+    # reject valid recordings. Common MP4/MOV headers let us disable external
+    # tracks explicitly without relying on the filename (which is input.audio).
+    # Unusual MOV headers still use FFmpeg's enable_drefs/use_absolute_path=false
+    # defaults; never enable external references in any branch.
+    with Path(source).open('rb') as recording:
+        header = recording.read(8)
+    if len(header) == 8 and header[4:8] in MOV_ATOMS:
+        return ['-f', 'mov', '-enable_drefs', '0', '-use_absolute_path', '0']
+    return []
+
+
 def convert(source, target):
     global CONVERTER
     executable = ffmpeg_executable()
     check_cancelled()
+    input_options = container_options(source)
     with PROCESS_LOCK:
         check_cancelled()
         CONVERTER = subprocess.Popen([
             str(executable), '-hide_banner', '-loglevel', 'error', '-nostdin',
-            '-protocol_whitelist', 'file,pipe', '-y', '-i', str(source), '-vn',
+            '-protocol_whitelist', 'file,pipe', '-format_whitelist', AUDIO_FORMATS,
+            '-codec_whitelist', AUDIO_CODECS,
+            *input_options, '-y', '-i', str(source), '-vn',
             '-ac', '1', '-ar', '16000', '-c:a', 'pcm_s16le', str(target),
         ], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))

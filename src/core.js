@@ -1,6 +1,8 @@
 // Queue and commit rules are independent of Obsidian and exercised with a fake vault.
 const {LEGACY_PROMPT: PROMPT,correctionPlan,chunkPrompt,joinCorrected}=require('./correction');
+const {namingSnapshot,diaryFilename}=require('./naming');
 const DEFAULTS = { folder:'Voice Diary/Recordings', finalFolder:'Voice Diary/Notes', language:'zh', senseVoiceRoot:'',
+  noteNaming:'date-topic',titleIncludeYear:false,diaryDayStartHour:4,
   inputDeviceId:'', apiEnabled:false, apiUrl:'', apiKey:'', model:'', timeoutSeconds:120, disableThinking:true,
   prompt:PROMPT, correctionMode:'natural', chunkChars:4000, targetLanguage:'简体中文',
   actions:[{id:'grammar',title:'忠实校对',prompt:PROMPT},
@@ -40,7 +42,10 @@ function transcriptPath(audio,folder,number=1) {
   const stem=audio.slice(audio.lastIndexOf('/')+1).replace(/\.[^/.]+$/,'');
   return `${folderPath(folder,'成品笔记目录')}/${stem}${number>1?'-'+number:''}-transcript.md`;
 }
-function numberedTranscript(path,number) {return number===1?path:path.replace(/-transcript\.md$/i,`-${number}-transcript.md`);}
+function numberedTranscript(path,number) {
+  if(number===1)return path;
+  return /-transcript\.md$/i.test(path)?path.replace(/-transcript\.md$/i,`-${number}-transcript.md`):path.replace(/\.md$/i,`-${number}.md`);
+}
 function splitText(text, limit=4000) {
   const chunks=[]; let rest=text;
   limit=Math.max(500,Math.min(16000,Number(limit)||4000));
@@ -90,11 +95,22 @@ function normalizeApi(config={}) {
 function requireApi(config) {
   if(apiMode(config)!=='enabled')throw new DiaryError('api-disabled','文字 API 未开启或配置未填完整；当前仅本地转写。如需文字整理，请开启 API 并补齐配置', {manual:true});
 }
+function apiOrigin(value) {
+  try {return new URL(value).origin;}catch {return null;}
+}
+function validateApiUrl(value) {
+  let url;
+  try {url=new URL(value);}catch {throw new DiaryError('config','请设置完整的文字接口地址', {pause:true});}
+  if(!/^https?:$/.test(url.protocol)||url.username||url.password)
+    throw new DiaryError('config','请检查文字接口地址；地址中不能包含用户名或密码', {pause:true});
+  if(url.protocol==='http:'&&!localApi(url))
+    throw new DiaryError('config','远程文字接口必须使用 HTTPS；只有本机 localhost、127.0.0.1 或 [::1] 可使用 HTTP', {pause:true});
+  return url;
+}
 function llmConfig(config) {
   requireApi(config);
-  let url;
-  try {url=new URL(config.apiUrl);} catch {throw new DiaryError('config','请设置完整的文字接口地址', {pause:true});}
-  if (!/^https?:$/.test(url.protocol) || url.username || url.password || !String(config.model).trim())
+  const url=validateApiUrl(config.apiUrl);
+  if (!String(config.model).trim())
     throw new DiaryError('config','请检查文字接口地址和模型配置', {pause:true});
   const local=localApi(url);
   if (!local && !String(config.apiKey).trim()) throw new DiaryError('config','请填写本机 API Key 或迁移原配置', {pause:true});
@@ -220,10 +236,30 @@ class Queue {
   }
   async findFinal(sha) {
     // Metadata permits recovery even when final creation succeeded before state persistence.
-    for(const f of this.vault.getFiles().filter(f=>/-transcript\.md$/i.test(f.path))) {
-      if(matchesFinal(await this.vault.read(f),sha)) return f.path;
+    // Pending writes are different: their persisted expected digest is stronger
+    // evidence than a marker followed by a truncated, nonempty first sentence.
+    const related=Object.values(this.state.jobs).filter(job=>job.sha===sha);
+    const excluded=new Set(related.flatMap(job=>Array.isArray(job.incompleteOutputs)?job.incompleteOutputs:[]));
+    for(const f of this.vault.getFiles().filter(f=>/\.md$/i.test(f.path))) {
+      if(excluded.has(f.path))continue;
+      const body=await this.vault.read(f);
+      if(!matchesFinal(body,sha))continue;
+      const pending=related.filter(job=>job.status!=='done'&&job.output===f.path);
+      let complete=true;
+      for(const job of pending) {
+        const expected=job.pendingFinal?.path===f.path?job.pendingFinal.sha256:
+          typeof job.corrected==='string'?await sha256(finalContent(job)):null;
+        if(expected&&await sha256(body)!==expected){complete=false;break;}
+      }
+      if(complete)return f.path;
     }
     return null;
+  }
+  async preserveIncomplete(j,path) {
+    j.incompleteOutputs=[...new Set([...(Array.isArray(j.incompleteOutputs)?j.incompleteOutputs:[]),path])];
+    delete j.output;delete j.pendingFinal;
+    // Persist exclusion before trying another name, including after restart.
+    await this.save();
   }
   async tick() {
     if(this.busy||this.closed()||!this.state.enabled) return;
@@ -254,7 +290,7 @@ class Queue {
       }
     } finally {this.busy=false;}
   }
-  reset(j) { for(const k of ['sha','raw','chunks','parts','corrected','target','output','id','sig','correctionConfig','processingMode','stage']) delete j[k]; }
+  reset(j) { for(const k of ['sha','raw','chunks','parts','corrected','target','output','id','sig','correctionConfig','processingMode','stage','targetFolder','naming','pendingFinal','incompleteOutputs']) delete j[k]; }
   useLocalTranscript(j) {
     j.processingMode='local';j.stage='local_transcribed';j.corrected=j.raw;
     for(const key of ['chunks','parts','correctionConfig'])delete j[key];
@@ -268,15 +304,21 @@ class Queue {
     if(recovered) {j.output=recovered;j.status='done';delete j.error;await this.save();return;}
     const duplicate=Object.values(this.state.jobs).find(x=>x!==j&&x.sha===sha&&x.status==='ignored');
     if(duplicate&&!j.manual) {j.status='ignored';await this.save();return;}
-    // Existing transcripts are protected even if their historical stage cannot be established.
-    if(!j.target) {
-      j.target=j.output||transcriptPath(file.path,this.config().finalFolder??DEFAULTS.finalFolder);
+    // Freeze the destination and naming rules before transcription. Existing
+    // checkpoints with a chosen path retain that exact path across upgrades.
+    if(!j.target&&j.output)j.target=j.output;
+    if(!j.target&&!j.naming) {
+      j.targetFolder=folderPath(this.config().finalFolder??DEFAULTS.finalFolder,'成品笔记目录');
+      j.naming=namingSnapshot(file,this.config(),this.now());
+      if(j.naming.mode==='source')j.target=transcriptPath(file.path,j.targetFolder);
       await this.save();
     }
-    const canonical=j.target,legacy=file.path.replace(/\.[^/.]+$/,'-transcript.md');
-    if(!j.corrected && [canonical,legacy].some(path=>this.vault.getAbstractFileByPath(path)))
+    const destination=j.target?j.target.slice(0,j.target.lastIndexOf('/')):folderPath(j.targetFolder,'成品笔记目录');
+    const sourceTarget=transcriptPath(file.path,destination),legacy=file.path.replace(/\.[^/.]+$/,'-transcript.md');
+    // Existing source-named manuscripts remain protected before any API call.
+    if(!j.corrected && [j.target,sourceTarget,legacy].filter(Boolean).some(path=>this.vault.getAbstractFileByPath(path)))
       throw new DiaryError('conflict','成品目录或录音旁已有同名 -transcript 稿件，保留文件；请核对后另行处理', {manual:true});
-    await ensureFolder(this.vault,canonical.slice(0,canonical.lastIndexOf('/')));
+    await ensureFolder(this.vault,destination);
     if(this.closed()) return;
     if(!j.processingMode) {
       j.processingMode=apiMode(this.config())==='enabled'?'api':'local';
@@ -338,35 +380,46 @@ class Queue {
     }
     if(this.closed()) return;
     if(await this.fingerprint(file,sig)!==sha) throw new DiaryError('changed','录音已改变');
+    if(!j.target){j.target=`${destination}/${diaryFilename(j.naming,j.corrected||j.raw)}`;await this.save();}
+    const canonical=j.target;
     const final=finalContent(j);
+    const expectedHash=await sha256(final);
     // Create only; never modify, trash, rename or remove any existing note/audio.
     let target=j.output||canonical;
     if(j.output) {
       const existing=this.vault.getAbstractFileByPath(target);
       if(existing) {
-        if(matchesFinal(await this.vault.read(existing),sha)){j.status='done';delete j.error;await this.save();return;}
-        throw new DiaryError('conflict','已选定的最终稿路径被其他文件占用，保留文件', {manual:true});
+        if(!Array.isArray(existing.children)&&await this.vault.read(existing)===final){j.status='done';delete j.error;await this.save();return;}
+        await this.preserveIncomplete(j,target);
       }
     }
+    let verified=false;
     for(let n=1;n<=100;n++) {
       target=n===1?(j.output||canonical):numberedTranscript(canonical,n);
       if(this.vault.getAbstractFileByPath(target)) continue;
-      j.output=target;j.status='committing';await this.save();
-      try {await this.vault.create(target,final);break;} catch(e) {
-        const existing=this.vault.getAbstractFileByPath(target);
-        if(!existing) throw e;
-        // Some adapters can finish the write and still reject. Recover the
-        // marked recording before choosing another name and creating a duplicate.
-        if(matchesFinal(await this.vault.read(existing),sha))break;
-        if(n===100) throw new DiaryError('conflict','最终稿路径冲突过多', {manual:true});
+      j.output=target;j.pendingFinal={path:target,sha256:expectedHash};j.status='committing';await this.save();
+      let failure;
+      try {await this.vault.create(target,final);}catch(error){failure=error;}
+      if(this.closed())return;
+      const existing=this.vault.getAbstractFileByPath(target);
+      if(!existing)throw failure||new DiaryError('save','最终稿保存后无法找到；完整转写检查点保留', {manual:true});
+      const body=Array.isArray(existing.children)?null:await this.vault.read(existing);
+      // A successful promise is insufficient: read back the complete content.
+      // The same comparison also recovers a full write followed by rejection.
+      if(body===final){verified=true;break;}
+      await this.preserveIncomplete(j,target);
+      const ownMarker=`voice_diary_job_id: ${JSON.stringify(j.id)}\n`;
+      if(!failure||(body?.includes(ownMarker)&&matchesFinal(body,sha))||(typeof body==='string'&&final.startsWith(body))) {
+        throw new DiaryError('save','最终稿写入不完整或读回内容不一致；原文件和完整转写检查点保留，重试时将另存新文件', {manual:true});
       }
+      if(n===100)throw new DiaryError('conflict','最终稿路径冲突过多；完整转写检查点保留', {manual:true});
     }
     const saved=this.vault.getAbstractFileByPath(target);
-    if(!saved || !matchesFinal(await this.vault.read(saved),sha)) throw new DiaryError('save','最终稿保存验证未通过');
+    if(!verified||!saved||await this.vault.read(saved)!==final)throw new DiaryError('save','最终稿完整内容校验未通过；完整转写检查点保留', {manual:true});
     j.output=target;j.status='done';delete j.error;await this.save();
     // A completed record and the marked final remain sufficient for future deduplication.
-    for(const k of ['raw','chunks','parts','corrected','correctionConfig']) delete j[k];
+    for(const k of ['raw','chunks','parts','corrected','correctionConfig','pendingFinal']) delete j[k];
     await this.save();this.notify(`语音日记完成：${target}`);
   }
 }
-module.exports={DEFAULTS,PROMPT,DiaryError,Queue,LlmClient,clone,signature,isAudio,folderPath,ensureFolder,transcriptPath,splitText,sha256,finalContent,matchesFinal,llmConfig,apiMode,normalizeApi,requireApi};
+module.exports={DEFAULTS,PROMPT,DiaryError,Queue,LlmClient,clone,signature,isAudio,folderPath,ensureFolder,transcriptPath,splitText,sha256,finalContent,matchesFinal,llmConfig,apiMode,normalizeApi,requireApi,apiOrigin,validateApiUrl};

@@ -34,7 +34,8 @@ class AudioRecorder {
         // Track mute means the source cannot provide data, not that the room is quiet.
         track.onmute=()=>interrupt('muted');
       }
-      this.media.start(500);this.startedAt=Date.now();this.state='recording';
+      session.recordedAt=Date.now();
+      this.media.start(500);this.startedAt=session.recordedAt;this.state='recording';
     } catch(e) {this.release();this.state='idle';throw e instanceof DiaryError?e:new DiaryError('microphone','无法开始录音，请检查麦克风权限及设备');}
   }
   async stop() {
@@ -46,7 +47,7 @@ class AudioRecorder {
         if(settled||this.session!==session) return; settled=true;globalThis.clearTimeout(timer);
         const blob=new Blob(session.chunks,{type:session.mime});
         this.release();this.chunks=[];this.state='idle';
-        resolve(blob.size?{blob,ext:extension(session.mime),partial}:null);
+        resolve(blob.size?{blob,ext:extension(session.mime),partial,recordedAt:session.recordedAt}:null);
       };
       media.onstop=()=>{session.stopSeen=true;finish(false);};
       timer=globalThis.setTimeout(()=>finish(true),4000);

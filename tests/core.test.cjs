@@ -16,7 +16,7 @@ class Vault {
 function setup(overrides={}) {
   const vault=overrides.vault||new Vault(),state=overrides.state||{enabled:true,initialized:true,jobs:{}};
   let now=100000,asr=0,llm=0,saved=0;
-  const config={...clone(DEFAULTS),apiEnabled:true,apiUrl:'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',apiKey:'test-secret',model:'qwen3.8-flash'};
+  const config={...clone(DEFAULTS),noteNaming:'source',apiEnabled:true,apiUrl:'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',apiKey:'test-secret',model:'qwen3.8-flash'};
   const queue=new Queue({vault,state,config:()=>config,save:async()=>{saved++;},now:()=>now,
     transcribe:async()=>{asr++;return '今天录了一段日记。';},llm:{complete:async()=>{llm++;return '今天，录了一段日记。';}},...overrides});
   return {vault,state,queue,config,advance:(n=31000)=>{now+=n;},counts:()=>({asr,llm,saved})};
@@ -116,12 +116,13 @@ test('an adapter rejection after the final write recovers the one saved note wit
   assert.match(await h.vault.read(h.vault.getAbstractFileByPath(j.output)),/今天，录了一段日记。/);
   assert.deepEqual({asr:h.counts().asr,llm:h.counts().llm},{asr:1,llm:1});
 });
-test('a competing marked final for the same recording is recovered and preserved after create rejects',async()=>{
-  const h=setup(),f=addAudio(h);let creates=0,existingBody;
-  h.vault.create=async(path)=>{creates++;existingBody=finalContent({...h.state.jobs[f.path],id:'recovered-job',corrected:'已经核对的现有成品'});h.vault.add(path,existingBody);throw Error('concurrent creation');};
-  await run(h);const j=h.state.jobs[f.path];assert.equal(j.status,'done');assert.equal(creates,1);
-  assert.equal(j.output,`${DEFAULTS.finalFolder}/voice-test-transcript.md`);assert.equal(h.vault.getFiles().filter(f=>f.path.endsWith('.md')).length,1);
-  assert.equal(await h.vault.read(h.vault.getAbstractFileByPath(j.output)),existingBody);
+test('a competing same-recording marker is preserved without substituting it for this complete final',async()=>{
+  const h=setup(),f=addAudio(h),create=h.vault.create.bind(h.vault);let creates=0,existingBody;
+  h.vault.create=async(path,body)=>{creates++;if(creates===1){existingBody=finalContent({...h.state.jobs[f.path],id:'recovered-job',corrected:'已经核对的现有成品'});h.vault.add(path,existingBody);throw Error('concurrent creation');}return create(path,body);};
+  await run(h);const j=h.state.jobs[f.path];assert.equal(j.status,'done');assert.equal(creates,2);
+  assert.equal(j.output,`${DEFAULTS.finalFolder}/voice-test-2-transcript.md`);assert.equal(h.vault.getFiles().filter(f=>f.path.endsWith('.md')).length,2);
+  assert.equal(await h.vault.read(h.vault.getAbstractFileByPath(`${DEFAULTS.finalFolder}/voice-test-transcript.md`)),existingBody);
+  assert.match(await h.vault.read(h.vault.getAbstractFileByPath(j.output)),/今天，录了一段日记。/);
 });
 test('a competing marked final with a different source hash is preserved while this recording gets a suffix',async()=>{
   const h=setup(),f=addAudio(h),create=h.vault.create.bind(h.vault);let creates=0,existingBody;
@@ -166,6 +167,23 @@ test('thinking extension is scoped to supported Qwen providers',()=>{
   assert.equal(llmConfig(base).body.enable_thinking,false);
   assert.ok(!('enable_thinking' in llmConfig({...base,apiUrl:'https://example.org/v1/chat/completions'}).body));
   assert.ok(!('enable_thinking' in llmConfig({...base,model:'other-model'}).body));
+});
+test('remote plaintext endpoints fail before any credential or diary dispatch',async()=>{
+  const base={...clone(DEFAULTS),apiEnabled:true,apiKey:'synthetic-test-key',model:'test-model'};
+  for(const apiUrl of ['http://provider.example.invalid/v1/chat/completions','http://192.168.1.23:1234/v1/chat/completions','http://localhost.example.invalid/v1/chat/completions']) {
+    let calls=0;const client=new LlmClient(async()=>{calls++;throw Error('must not dispatch');});
+    await assert.rejects(client.complete({...base,apiUrl},'synthetic diary','rules'),e=>e.code==='config'&&e.message.includes('HTTPS'));
+    assert.equal(calls,0,apiUrl);assert.equal(client.active,false);
+  }
+});
+test('HTTPS remote and HTTP loopback endpoints retain supported request behavior',async()=>{
+  for(const apiUrl of ['https://provider.example.invalid/v1/chat/completions','http://localhost:1234/v1/chat/completions','http://127.0.0.1:1234/v1/chat/completions','http://[::1]:1234/v1/chat/completions']) {
+    const local=apiUrl.startsWith('http:');let sent;
+    const client=new LlmClient(async request=>{sent=request;return {status:200,json:{choices:[{finish_reason:'stop',message:{content:'result'}}]}};});
+    const cfg={...clone(DEFAULTS),apiEnabled:true,apiUrl,apiKey:local?'':'synthetic-test-key',model:'test-model'};
+    assert.equal(await client.complete(cfg,'synthetic diary','rules'),'result');assert.equal(sent.url,apiUrl);
+    assert.equal(!!sent.headers.Authorization,!local);
+  }
 });
 test('uncancellable timeout prevents overlapping requests until original settles',async()=>{
   let finish,timeout;

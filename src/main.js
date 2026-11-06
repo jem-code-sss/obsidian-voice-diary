@@ -1,5 +1,5 @@
 const {Plugin,PluginSettingTab,Setting,Notice,Platform,TFile,Modal,MarkdownView,requestUrl,setIcon}=require('obsidian');
-const {DEFAULTS,PROMPT,DiaryError,Queue,LlmClient,clone,isAudio,folderPath,ensureFolder,signature,apiMode,normalizeApi,requireApi}=require('./core');
+const {DEFAULTS,PROMPT,DiaryError,Queue,LlmClient,clone,isAudio,folderPath,ensureFolder,signature,apiMode,normalizeApi,requireApi,apiOrigin,validateApiUrl,llmConfig}=require('./core');
 const {MODES,normalizeCorrection}=require('./correction');
 const {DeviceStore}=require('./store');
 const {AudioRecorder}=require('./recorder');
@@ -75,6 +75,8 @@ module.exports=class VoiceDiaryUnified extends Plugin {
   }
   persist(){return this.store.save(this.state);}
   async setApiEnabled(enabled) {
+    if(enabled&&this.apiConfigTask)throw new DiaryError('busy','正在应用接口配置，请稍候再开启 API');
+    if(enabled&&apiMode({...this.settings,apiEnabled:true})==='enabled')llmConfig({...this.settings,apiEnabled:true});
     const previous=this.settings.apiEnabled;this.settings.apiEnabled=!!enabled;
     try {await this.persist();}catch(e){
       if(enabled){this.settings.apiEnabled=previous;throw e;}
@@ -84,6 +86,29 @@ module.exports=class VoiceDiaryUnified extends Plugin {
     this.updateStatus();
     new Notice(enabled?(apiMode(this.settings)==='enabled'?'文字 API 整理已开启；本地任务和已有成品不会自动重新整理。':'文字 API 开关已开启，但配置未填完整；当前仍仅本地转写。'):
       '文字 API 已关闭；后续不再发送请求。已发出的请求无法撤回，未完成整理的任务将保存完整本地转写。',10000);
+  }
+  async applyApiConfig(draft) {
+    if(this.mobile||this.closed)throw new DiaryError('api-disabled','当前设备不能应用文字接口配置');
+    if(this.apiConfigTask||this.queue?.busy||this.manualBusy||this.llm?.active)
+      throw new DiaryError('busy','请等待当前任务或接口请求完成后再应用接口配置');
+    const next={apiUrl:String(draft.apiUrl??'').trim(),model:String(draft.model??'').trim(),apiKey:String(draft.apiKey??'').trim()};
+    if(next.apiUrl)next.apiUrl=validateApiUrl(next.apiUrl).href;
+    const previous={apiUrl:this.settings.apiUrl,model:this.settings.model,apiKey:this.settings.apiKey};
+    const changedOrigin=apiOrigin(previous.apiUrl)!==apiOrigin(next.apiUrl);
+    // Credentials belong to an origin. A copied draft must not carry the old
+    // provider's key to another host, port or scheme.
+    const clearedKey=changedOrigin&&!!next.apiKey&&next.apiKey===String(previous.apiKey??'').trim();
+    if(clearedKey)next.apiKey='';
+    this.apiConfigTask=true;
+    Object.assign(this.settings,next,{apiEnabled:false});
+    try {await this.persist();}
+    catch {
+      Object.assign(this.settings,previous,{apiEnabled:false});this.updateStatus();
+      throw new DiaryError('storage','接口配置保存失败；文字 API 已在当前会话关闭。请检查磁盘并重试，重启前确认关闭状态', {manual:true});
+    }finally {this.apiConfigTask=false;}
+    this.updateStatus();
+    new Notice(clearedKey?'接口配置已应用，已清除原服务的 Key。请填写新服务 Key、再次应用后手动开启 API。':'接口配置已应用；文字 API 保持关闭，请确认地址和 Key 匹配后手动开启。',10000);
+    return next;
   }
   applyFolder(key,value) {
     if(this.folderTask)return Promise.reject(new DiaryError('busy','正在应用目录设置，请稍候'));
@@ -246,19 +271,35 @@ module.exports=class VoiceDiaryUnified extends Plugin {
     this.saving=true;
     try {
       const pending=this.pendingAudio;
+      pending.recordedAt??=Date.now();
       const folder=await ensureFolder(this.app.vault,this.recordFolder||this.settings.folder);
       const bytes=await pending.blob.arrayBuffer();
-      if(!pending.path){const d=new Date();const pad=n=>String(n).padStart(2,'0');
-        pending.path=`${folder}/voice-${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}-${crypto.randomUUID().slice(0,8)}.${pending.ext}`;}
-      // If a previous call wrote before rejecting, byte equality proves retry safety.
-      let file=this.app.vault.getAbstractFileByPath(pending.path);
-      if(file){const saved=new Uint8Array(await this.app.vault.readBinary(file)),original=new Uint8Array(bytes);
-        if(saved.length!==original.length||saved.some((v,i)=>v!==original[i])) throw new DiaryError('save','录音目标路径被占用；音频保留在内存，重启前请另存');}
-      else file=await this.app.vault.createBinary(pending.path,bytes);
-      const check=new Uint8Array(await this.app.vault.readBinary(file)),original=new Uint8Array(bytes);
-      if(check.length!==original.length||check.some((v,i)=>v!==original[i])) throw new DiaryError('save','录音保存验证失败，请重试保存');
-      this.pendingAudio=null;
-      new Notice(`录音已保存：${file.name}${pending.interruption?`；${pending.interruption}，录音已结束`:''}${pending.partial?'；设备中断，末尾可能不完整':''}`,pending.interruption?4000:10000);
+      if(!bytes.byteLength)throw new DiaryError('empty','录音为空，请检查麦克风');
+      const original=new Uint8Array(bytes);
+      const matches=saved=>{const check=new Uint8Array(saved);return check.length===original.length&&check.every((value,index)=>value===original[index]);};
+      let file;
+      // Preserve a partial write or conflicting file and allocate a fresh path.
+      for(let attempt=0;attempt<3;attempt++){
+        if(!pending.path){const d=new Date(pending.recordedAt);const pad=n=>String(n).padStart(2,'0');
+          pending.path=`${folder}/voice-${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}-${crypto.randomUUID()}.${pending.ext}`;}
+        file=this.app.vault.getAbstractFileByPath(pending.path);
+        if(!file)break;
+        let same=false;
+        if(!Array.isArray(file.children)){
+          try{same=matches(await this.app.vault.readBinary(file));}catch{}
+        }
+        if(same)break;
+        pending.path=null;pending.recovered=true;
+      }
+      if(!pending.path)throw new DiaryError('save','无法分配新的录音文件名，音频仍在内存；请保留窗口并重试保存');
+      if(!file){
+        try{file=await this.app.vault.createBinary(pending.path,bytes);}
+        catch(error){file=this.app.vault.getAbstractFileByPath(pending.path);if(!file)throw error;}
+      }
+      if(Array.isArray(file.children)||!matches(await this.app.vault.readBinary(file)))
+        throw new DiaryError('save','录音保存校验失败，音频仍在内存；请重试保存，原目标内容不一致时会自动另存新文件');
+      if(this.pendingAudio===pending)this.pendingAudio=null;
+      new Notice(`录音已保存：${file.name}${pending.recovered?'；已另存新文件，原目标已保留':''}${pending.interruption?`；${pending.interruption}，录音已结束`:''}${pending.partial?'；设备中断，末尾可能不完整':''}`,pending.interruption?4000:10000);
     } catch(e){new Notice('录音尚未保存，音频仍在内存。请修复目录权限后点击麦克风或“重试保存录音”，暂勿退出 Obsidian',15000);throw e;}
     finally{this.saving=false;this.updateStatus();}
   }
@@ -338,6 +379,8 @@ module.exports=class VoiceDiaryUnified extends Plugin {
       for(const key of ['language','inputDeviceId']) if(typeof voice[key]==='string')imported[key]=voice[key];
       if(typeof voice.folder==='string') imported.folder=folderPath(voice.folder);
       for(const key of ['apiUrl','apiKey','model','targetLanguage']) if(typeof llm[key]==='string'&&llm[key])imported[key]=llm[key];
+      if(apiOrigin(imported.apiUrl)!==apiOrigin(this.settings.apiUrl)&&!llm.apiKey)imported.apiKey='';
+      imported.apiEnabled=false;
       if(llm.timeoutSeconds) imported.timeoutSeconds=Math.max(30,Math.min(300,Number(llm.timeoutSeconds)||120));
       if(llm.promptGrammar) {imported.prompt=llm.promptGrammar;imported.correctionMode='custom';}
       const map={grammar:'promptGrammar',translate:'promptTranslate',expand:'promptExpand',summarize:'promptSummarize'};
@@ -380,7 +423,7 @@ module.exports=class VoiceDiaryUnified extends Plugin {
   }
 };
 class Settings extends PluginSettingTab {
-  constructor(app,p){super(app,p);this.p=p;this.activeSection='recording';this.folderDrafts={};}
+  constructor(app,p){super(app,p);this.p=p;this.activeSection='recording';this.folderDrafts={};this.apiDrafts=null;}
   display(){
     const p=this.p,c=this.containerEl;c.empty();c.addClass('vdu-settings');
     c.createEl('h2',{text:`${p.manifest.name||'Voice Diary Processor'}${p.manifest.version?' · '+p.manifest.version:''}`});
@@ -432,6 +475,10 @@ class Settings extends PluginSettingTab {
     if(!p.mobile)folderField('成品笔记目录','finalFolder','仓库内相对路径，默认 Voice Diary/Notes。不存在时自动创建；已有文件不搬动，处理中的任务保留原定位置。');
     new Setting(recording).setName('录音待保存').setDesc(p.pendingAudio?'音频仍在内存，退出前请保存。':'停止录音后自动保存原始音频。').addButton(b=>b.setButtonText('重试保存').onClick(()=>void p.saveRecording().catch(e=>new Notice(safeMessage(e)))));
     if(p.mobile){recording.createEl('p',{text:'成品笔记目录在电脑端设置，保存后同步回手机。请保持 Obsidian 在前台录音；切后台、锁屏或麦克风中断时结束本段并尝试保存，返回后需重新点击录音。本版不支持后台持续收音。'});return;}
+    new Setting(recording).setName('成品笔记命名').setDesc('只用于尚未开始处理的新任务；已有成品和在途目标不改名。主题从本次文字在本地提取，不额外调用 API。')
+      .addDropdown(d=>d.addOption('date-topic','日期 + 日记主题（12.13日记_出游）').addOption('source','原音文件名 + transcript').setValue(p.settings.noteNaming).onChange(v=>{p.settings.noteNaming=v;save();}));
+    new Setting(recording).setName('标题包含年份').setDesc('开启后为 2026.12.13日记_出游。日期优先使用原音文件名中的录音开始时间，凌晨 04:00 前归前一天；仅日期无时间时不减天。外部音频回退到文件创建时间，创建时间不可用时使用处理日期。')
+      .addToggle(t=>t.setValue(p.settings.titleIncludeYear===true).onChange(v=>{p.settings.titleIncludeYear=v;save();}));
     new Setting(local).setName('本地模型').setDesc('SenseVoiceSmall INT8 · CPU 本地识别，自动标点和数字规范化。');
     new Setting(local).setName('手动准备 SenseVoice 环境').setDesc('电脑端需要单独准备 Python、识别依赖和约 230 MB 的 SenseVoice 模型。打开说明下载后由你手动运行准备工具；插件只检查和调用已安装环境。当前支持 Windows x64。')
       .addButton(b=>b.setButtonText('手动环境准备说明').setCta().onClick(()=>window.open('https://github.com/jem-code-sss/obsidian-voice-diary/releases','_blank','noopener,noreferrer')))
@@ -449,11 +496,32 @@ class Settings extends PluginSettingTab {
       if(!SENSEVOICE_LANGUAGES.includes(p.settings.language))d.addOption(p.settings.language,`${p.settings.language}（暂不支持，请重新选择）`);
       d.setValue(p.settings.language).onChange(v=>{if(SENSEVOICE_LANGUAGES.includes(v)){p.settings.language=v;save();}});
     });
-    new Setting(api).setName('启用文字 API 整理').setDesc('关闭或配置未填完整时，只用本地 SenseVoice 转写并保存到成品目录。关闭也会停用选区文字处理和连接测试；已发出的请求无法撤回，后续片段停止调用。').addToggle(t=>t.setValue(p.settings.apiEnabled).onChange(async v=>{
-      try{await p.setApiEnabled(v);}catch(e){new Notice(safeMessage(e),10000);t.setValue(p.settings.apiEnabled);}refreshApi();
-    }));
+    this.apiDrafts??={apiUrl:p.settings.apiUrl,model:p.settings.model,apiKey:p.settings.apiKey};
+    const apiDirty=()=>['apiUrl','model','apiKey'].some(key=>this.apiDrafts[key]!==p.settings[key]);
+    let apiToggle;
+    new Setting(api).setName('启用文字 API 整理').setDesc('先应用接口配置，再手动开启。关闭或配置未填完整时，只用本地 SenseVoice 转写；连接测试和选区文字操作也停用。已发出的请求无法撤回。').addToggle(t=>{apiToggle=t;t.setValue(p.settings.apiEnabled).onChange(async v=>{
+      try{if(v&&apiDirty())throw new DiaryError('config','接口配置尚未应用，请先点击“应用接口配置”');await p.setApiEnabled(v);}catch(e){new Notice(safeMessage(e),10000);t.setValue(p.settings.apiEnabled);}refreshApi();
+    });
+    });
     apiLabel=api.createEl('p',{cls:'vdu-settings-note'});refreshApi();
-    field(api,'文字接口完整地址','apiUrl');field(api,'文字模型','model');field(api,'本机 API Key','apiKey','明文保存在本机用户数据目录，不写入仓库的 data.json。',true);
+    const apiInputs={};
+    const apiDraftField=(name,key,desc='',secret=false)=>new Setting(api).setName(name).setDesc(desc).addText(t=>{
+      apiInputs[key]=t;t.setValue(String(this.apiDrafts[key]??''));if(secret)t.inputEl.type='password';
+      t.onChange(v=>{
+        this.apiDrafts[key]=v;
+        if(key==='apiUrl'&&apiOrigin(v)&&apiOrigin(v)!==apiOrigin(p.settings.apiUrl)&&this.apiDrafts.apiKey===p.settings.apiKey){
+          this.apiDrafts.apiKey='';apiInputs.apiKey?.setValue('');
+        }
+      });
+    });
+    apiDraftField('文字接口完整地址','apiUrl','远程服务必须使用 HTTPS；本机回环服务可使用 HTTP。输入后点击“应用接口配置”。');
+    apiDraftField('文字模型','model');apiDraftField('本机 API Key','apiKey','明文保存在本机用户数据目录，不写入仓库。更换服务地址会清除沿用的旧 Key。',true);
+    new Setting(api).setName('应用接口配置').setDesc('地址、模型和 Key 作为一组应用；编辑不会立即改变正在使用的配置。应用后 API 自动关闭，需要确认后重新开启。')
+      .addButton(b=>b.setButtonText('应用接口配置').setCta().onClick(async()=>{
+        try{const applied=await p.applyApiConfig(this.apiDrafts);this.apiDrafts={...applied};for(const key of Object.keys(apiInputs))apiInputs[key].setValue(applied[key]);}
+        catch(e){new Notice(safeMessage(e),10000);}
+        apiToggle.setValue(p.settings.apiEnabled);refreshApi();
+      }));
     new Setting(api).setName('请求超时（秒）').addText(t=>t.setValue(String(p.settings.timeoutSeconds)).onChange(v=>{p.settings.timeoutSeconds=Math.max(30,Math.min(300,Number(v)||120));save();}));
     new Setting(api).setName('Qwen 非思考模式').setDesc('仅对已识别的 DashScope Qwen 接口发送 enable_thinking=false；实际模型支持需连接测试确认。').addToggle(t=>t.setValue(p.settings.disableThinking).onChange(v=>{p.settings.disableThinking=v;save();}));
     new Setting(api).setName('连接测试').setDesc('仅点击时向已配置文字接口发送“测试”，不发送历史日记。').addButton(b=>b.setButtonText('测试连接').onClick(()=>void p.testConnection()));
@@ -474,7 +542,7 @@ class Settings extends PluginSettingTab {
     }));
     new Setting(tasks).setName('任务与恢复').addButton(b=>b.setButtonText('查看进度').onClick(()=>p.showStatus())).addButton(b=>b.setButtonText('重试失败任务').onClick(()=>void p.retry()));
     new Setting(tasks).setName('接口或模型变更后的恢复').setDesc('仅处理因配置变更而暂停的任务。保留本地转写，丢弃这些任务的旧校对片段并重新请求接口，可能再次计费。').addButton(b=>b.setButtonText('按新配置重新校对').onClick(()=>void p.retryCurrentConfig()));
-    new Setting(tasks).setName('从旧插件迁移本机配置').setDesc('读取录音目录、语言、Qwen 接口和提示词；本地识别继续使用 SenseVoice。不改动旧配置，不把 Key 复制到手机。').addButton(b=>b.setButtonText('读取并迁移').onClick(async()=>{await p.migrate();this.folderDrafts={};this.display();}));
+    new Setting(tasks).setName('从旧插件迁移本机配置').setDesc('读取录音目录、语言、Qwen 接口和提示词；本地识别继续使用 SenseVoice。不改动旧配置，不把 Key 复制到手机。').addButton(b=>b.setButtonText('读取并迁移').onClick(async()=>{await p.migrate();this.folderDrafts={};this.apiDrafts=null;this.display();}));
     tasks.createEl('p',{cls:'vdu-settings-note',text:'设置和任务检查点仅保存在本机用户数据目录，不进入仓库同步。检查点可能含转写正文，API Key 以明文保存；诊断和安装包不包含这些数据。SenseVoice 环境由用户手动准备，插件不会下载或安装识别依赖；转写在本机运行。'});
   }
 }

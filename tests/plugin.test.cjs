@@ -270,6 +270,99 @@ test('desktop exposes an API toggle independently of automatic processing',async
   assert.ok(p.status.text.includes('仅本地转写'));p.onunload();
 });
 
+test('API endpoint, model and key edits stay in memory drafts until explicitly applied',async()=>{
+  const {h,p}=await desktopFolderPlugin();Object.assign(p.settings,{...apiSettings(),apiUrl:'https://old.example.invalid/v1/chat/completions',apiKey:'SYNTHETIC-OLD-KEY'});
+  let saves=0;p.persist=async()=>{saves++;};p.settingTab.display();
+  const input=name=>h.texts.find(x=>x.name===name).text;
+  input('文字接口完整地址').change('https://new.example.invalid/v1/chat/completions');
+  assert.equal(input('本机 API Key').value,'');assert.equal(p.settingTab.apiDrafts.apiKey,'');
+  input('文字模型').change('new-model');input('本机 API Key').change('SYNTHETIC-NEW-KEY');
+  assert.equal(p.settings.apiUrl,'https://old.example.invalid/v1/chat/completions');assert.equal(p.settings.apiKey,'SYNTHETIC-OLD-KEY');
+  assert.equal(p.settings.model,'test-model');assert.equal(p.settings.apiEnabled,true);assert.equal(saves,0);
+  await h.buttons.find(x=>x.text==='应用接口配置').fn();
+  assert.equal(p.settings.apiUrl,'https://new.example.invalid/v1/chat/completions');assert.equal(p.settings.model,'new-model');
+  assert.equal(p.settings.apiKey,'SYNTHETIC-NEW-KEY');assert.equal(p.settings.apiEnabled,false);assert.equal(saves,1);
+  assert.equal(h.toggles.find(x=>x.name==='启用文字 API 整理').toggle.value,false);
+  assert.ok(!h.notices.join('').includes('SYNTHETIC'));p.onunload();
+});
+
+test('unapplied API drafts cannot be enabled and survive settings redraw without persistence',async()=>{
+  const {h,p}=await desktopFolderPlugin();p.settings.apiEnabled=false;let saves=0;p.persist=async()=>{saves++;};p.settingTab.display();
+  h.texts.find(x=>x.name==='文字接口完整地址').text.change('https://new.example.invalid/v1/chat/completions');
+  await h.toggles.find(x=>x.name==='启用文字 API 整理').toggle.change(true);
+  assert.equal(p.settings.apiEnabled,false);assert.equal(saves,0);assert.ok(h.notices.at(-1).includes('尚未应用'));
+  p.settingTab.display();assert.equal(h.texts.filter(x=>x.name==='文字接口完整地址').at(-1).text.value,'https://new.example.invalid/v1/chat/completions');
+  assert.equal(p.settings.apiUrl,'');assert.equal(saves,0);p.onunload();
+});
+
+test('origin changes clear a copied old key even when bypassing the settings UI',async()=>{
+  for(const [apiUrl,apiKey] of [['https://new.example.invalid/v1/chat/completions','SYNTHETIC-OLD-KEY'],['https://old.example.invalid:9443/v1/chat/completions','  SYNTHETIC-OLD-KEY  ']]) {
+    const {h,p}=await desktopFolderPlugin();Object.assign(p.settings,{...apiSettings(),apiUrl:'https://old.example.invalid/v1/chat/completions',apiKey});p.persist=async()=>{};
+    await p.applyApiConfig({...p.settings,apiUrl});
+    assert.equal(p.settings.apiUrl,apiUrl);assert.equal(p.settings.apiKey,'');assert.equal(p.settings.apiEnabled,false);
+    assert.ok(h.notices.at(-1).includes('清除'));p.onunload();
+  }
+});
+
+test('same-origin path and key rotation are applied together and still require enabling API',async()=>{
+  const {p}=await desktopFolderPlugin();Object.assign(p.settings,{...apiSettings(),apiUrl:'https://provider.example.invalid/old',apiKey:'SYNTHETIC-KEY'});p.persist=async()=>{};
+  await p.applyApiConfig({...p.settings,apiUrl:'https://provider.example.invalid/new'});
+  assert.equal(p.settings.apiKey,'SYNTHETIC-KEY');assert.equal(p.settings.apiEnabled,false);
+  await p.applyApiConfig({...p.settings,apiKey:'SYNTHETIC-ROTATED'});assert.equal(p.settings.apiKey,'SYNTHETIC-ROTATED');
+  await p.setApiEnabled(true);assert.equal(p.settings.apiEnabled,true);p.onunload();
+});
+
+test('applying API drafts is blocked while an ASR, manual action or uncancellable HTTP call is active',async()=>{
+  for(const busy of ['queue','manual','http']) {
+    const {p}=await desktopFolderPlugin();const before=JSON.stringify(p.settings);p.persist=async()=>{throw Error('must not save');};
+    if(busy==='queue')p.queue.busy=true;else if(busy==='manual')p.manualBusy=true;else p.llm.active=true;
+    await assert.rejects(p.applyApiConfig({apiUrl:'https://new.example.invalid/v1/chat/completions',model:'new',apiKey:'synthetic'}),e=>e.code==='busy');
+    assert.equal(JSON.stringify(p.settings),before);p.queue.busy=false;p.manualBusy=false;p.llm.active=false;p.onunload();
+  }
+});
+
+test('API apply closes the gate before persistence, blocks re-enable, and stays off after a disk failure',async()=>{
+  const {h,p}=await desktopFolderPlugin();Object.assign(p.settings,{...apiSettings(),apiUrl:'https://old.example.invalid/v1/chat/completions',apiKey:'SYNTHETIC-OLD-KEY'});
+  let failSave;p.persist=()=>new Promise((_,reject)=>{failSave=reject;});
+  const applying=p.applyApiConfig({apiUrl:'https://new.example.invalid/v1/chat/completions',model:'new',apiKey:'SYNTHETIC-NEW-KEY'});
+  assert.equal(p.settings.apiEnabled,false);await assert.rejects(p.setApiEnabled(true),e=>e.code==='busy');
+  failSave(Error('disk SYNTHETIC-NEW-KEY'));await assert.rejects(applying,e=>e.code==='storage');
+  assert.equal(p.settings.apiEnabled,false);assert.equal(p.settings.apiUrl,'https://old.example.invalid/v1/chat/completions');
+  assert.equal(p.settings.apiKey,'SYNTHETIC-OLD-KEY');assert.equal(p.apiConfigTask,false);assert.ok(!h.notices.join('').includes('SYNTHETIC'));p.onunload();
+});
+
+test('remote HTTP is rejected on apply and enable without persisting unsafe credentials',async()=>{
+  const {p}=await desktopFolderPlugin();let saves=0;p.persist=async()=>{saves++;};const before=JSON.stringify(p.settings);
+  await assert.rejects(p.applyApiConfig({apiUrl:'http://remote.example.invalid/v1/chat/completions',model:'m',apiKey:'synthetic'}),e=>e.code==='config'&&e.message.includes('HTTPS'));
+  assert.equal(JSON.stringify(p.settings),before);assert.equal(saves,0);
+  Object.assign(p.settings,{apiUrl:'http://remote.example.invalid/v1/chat/completions',model:'m',apiKey:'synthetic',apiEnabled:false});
+  await assert.rejects(p.setApiEnabled(true),e=>e.code==='config'&&e.message.includes('HTTPS'));
+  assert.equal(p.settings.apiEnabled,false);assert.equal(saves,0);p.onunload();
+});
+
+test('editing provider drafts during local ASR cannot send its old key to the new host',async()=>{
+  const {h,p,add}=await desktopFolderPlugin();Object.assign(p.settings,{...apiSettings(),apiUrl:'https://old.example.invalid/v1/chat/completions',apiKey:'SYNTHETIC-OLD-KEY'});p.persist=async()=>{};
+  p.app.vault.create=async(path,body)=>add(path,body);p.app.vault.read=async file=>new TextDecoder().decode(file.data);
+  let now=0,enter,finish;const entered=new Promise(resolve=>{enter=resolve;}),blocked=new Promise(resolve=>{finish=resolve;});let sent;
+  p.queue.now=()=>now;p.queue.transcribe=async()=>{enter();await blocked;return 'synthetic diary';};
+  p.queue.llm={complete:async config=>{sent=config;return 'synthetic result';}};
+  const audio=add('Voice Diary/Recordings/new.webm','synthetic audio');await p.queue.tick();now=31000;
+  const processing=p.queue.tick();await entered;p.settingTab.display();
+  h.texts.find(x=>x.name==='文字接口完整地址').text.change('https://new.example.invalid/v1/chat/completions');
+  await h.buttons.find(x=>x.text==='应用接口配置').fn();assert.ok(h.notices.at(-1).includes('请等待'));
+  finish();await processing;assert.equal(p.state.jobs[audio.path].status,'done');
+  assert.equal(sent.apiUrl,'https://old.example.invalid/v1/chat/completions');assert.equal(sent.apiKey,'SYNTHETIC-OLD-KEY');p.onunload();
+});
+
+test('partial legacy migration changes origin without inheriting the current provider key or enabling API',async()=>{
+  const h=host(),legacy=JSON.stringify({apiUrl:'https://new.example.invalid/v1/chat/completions',model:'new-model'});
+  const p=new h.Plugin({vault:{configDir:'.obsidian',adapter:{getBasePath:()=> 'D:/synthetic-vault',exists:async path=>path.includes('llm-text-assistant'),read:async()=>legacy}}});
+  p.settings={...apiSettings(),apiUrl:'https://old.example.invalid/v1/chat/completions',apiKey:'SYNTHETIC-OLD-KEY'};
+  p.queue={busy:false};p.state={config:p.settings,jobs:{},enabled:true};p.persist=async()=>{};
+  await p.migrate();assert.equal(p.settings.apiUrl,'https://new.example.invalid/v1/chat/completions');assert.equal(p.settings.apiKey,'');
+  assert.equal(p.settings.apiEnabled,false);assert.equal(p.state.enabled,false);assert.ok(!h.notices.join('').includes('SYNTHETIC'));
+});
+
 test('model preparation displays its busy state and blocks queue polling until it finishes',async()=>{
   const {h,p}=await desktopFolderPlugin();let finish,ticks=0;
   p.senseVoiceOptions=()=>({});p.asr={prepare:()=>new Promise(resolve=>{finish=resolve;}),close:async()=>{}};
@@ -353,4 +446,15 @@ test('a missing desktop runtime cache root fails safely before reading or writin
   const {h,p}=await desktopFolderPlugin();assert.equal(p.runtimeAssets,undefined);
   await assert.rejects(p.runtimeScript(),e=>e.code==='runtime_assets'&&e.pause===true);
   assert.ok(h.requires.every(id=>id==='obsidian'));p.onunload();
+});
+
+test('desktop naming controls persist the source option and year flag while explaining the local 04:00 rule',async()=>{
+  const {h,p}=await desktopFolderPlugin();let saved=0;p.persist=async()=>{saved++;};p.settingTab.display();
+  const naming=h.dropdowns.find(item=>item.name==='成品笔记命名').dropdown;
+  const year=h.toggles.find(item=>item.name==='标题包含年份').toggle;
+  assert.equal(naming.value,'date-topic');assert.equal(year.value,false);
+  naming.change('source');year.change(true);
+  assert.equal(p.settings.noteNaming,'source');assert.equal(p.settings.titleIncludeYear,true);assert.equal(saved,2);
+  assert.ok(h.descriptions.some(text=>text.includes('04:00')&&text.includes('创建时间')));
+  assert.ok(h.descriptions.some(text=>text.includes('本地提取')&&text.includes('不额外调用 API')));p.onunload();
 });
