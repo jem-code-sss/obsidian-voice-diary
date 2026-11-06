@@ -3,6 +3,16 @@
 .vdu-mic { position:fixed; right:22px; bottom:calc(85px + env(safe-area-inset-bottom)); width:54px; height:54px; border-radius:50%; z-index:100; background:var(--interactive-accent); color:var(--text-on-accent); box-shadow:0 3px 12px #0004; }
 .vdu-mic.is-recording { background:var(--color-red); }
 .vdu-mic svg { width:24px; height:24px; }
+.vdu-todo-mic { right:86px; }
+.vdu-todo-tabs, .vdu-todo-actions, .vdu-todo-pages { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin:12px 0; }
+.vdu-todo-card { border:1px solid var(--background-modifier-border); border-radius:10px; padding:14px; margin:12px 0; overflow-wrap:anywhere; }
+.vdu-todo-card h3 { margin:0 0 8px; }
+.vdu-todo-card p { margin:6px 0; }
+.vdu-todo-evidence, .vdu-todo-reason { color:var(--text-muted); font-size:var(--font-ui-small); white-space:pre-wrap; }
+.vdu-todo-hint { color:var(--text-muted); font-size:var(--font-ui-small); line-height:1.6; }
+.vdu-todo-error { color:var(--text-error); }
+.vdu-todo-editor .setting-item-control input { width:100%; }
+.vdu-todo-editor .setting-item { flex-wrap:wrap; gap:10px; }
 .vdu-record-indicator { position:fixed; right:22px; bottom:calc(145px + env(safe-area-inset-bottom)); z-index:100; max-width:calc(100vw - 44px); border-radius:8px; background:var(--background-primary); color:var(--text-normal); padding:6px 10px; box-shadow:0 2px 8px #0003; font-size:13px; }
 .vdu-record-indicator:empty { display:none; }
 .vdu-settings .vdu-settings-summary { color:var(--text-muted); font-size:var(--font-ui-small); margin:8px 0 16px; }

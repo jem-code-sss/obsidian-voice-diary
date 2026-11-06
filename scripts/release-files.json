@@ -54,6 +54,18 @@
     "tests/test_audio_security.py",
     "tests/recording-recovery.test.cjs",
     "tests/store-security.test.cjs",
-    "tests/final-integrity.test.cjs"
+    "tests/final-integrity.test.cjs",
+    "src/capture.js",
+    "tests/capture.test.cjs",
+    "tests/todo-recording.test.cjs",
+    "src/todos.js",
+    "src/todo-notes.js",
+    "src/todo-discovery.js",
+    "src/todo-ui.js",
+    "tests/todos.test.cjs",
+    "tests/todo-notes.test.cjs",
+    "tests/todo-queue.test.cjs",
+    "tests/todo-ui.test.cjs",
+    "docs/VOICE-TODOS.md"
   ]
 }

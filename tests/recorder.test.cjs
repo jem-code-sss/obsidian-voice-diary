@@ -13,7 +13,7 @@ function recorderFixture(){
     requestData(){flushes++;this.ondataavailable({data:new Blob(['before interruption'])});}
     stop(){this.state='inactive';this.onstop();}
   }
-  const ctx={module:{exports:{}},require:()=>require('../src/core'),navigator:{mediaDevices:{getUserMedia:async()=>({getTracks:()=>[track]})}},MediaRecorder,Blob,Date,setTimeout,clearTimeout};
+  const ctx={module:{exports:{}},require:name=>require(name==='./capture'?'../src/capture':'../src/core'),navigator:{mediaDevices:{getUserMedia:async()=>({getTracks:()=>[track]})}},MediaRecorder,Blob,Date,setTimeout,clearTimeout};
   vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../src/recorder.js'),'utf8'),ctx);
   const recorder=new ctx.module.exports.AudioRecorder(reason=>reasons.push(reason));
   return {recorder,track,reasons,counts:()=>({flushes,stops})};
@@ -37,7 +37,7 @@ function orderedFixture(){
     requestData(){}
     stop(){nativeStops++;this.state='inactive';if(controls.throwStop)throw Error('native stop error');if(controls.automaticStop)this.onstop?.();}
   }
-  const ctx={module:{exports:{}},require:()=>require('../src/core'),navigator:{mediaDevices:{getUserMedia:async()=>({getTracks:()=>[track]})}},MediaRecorder,Blob,Date,
+  const ctx={module:{exports:{}},require:name=>require(name==='./capture'?'../src/capture':'../src/core'),navigator:{mediaDevices:{getUserMedia:async()=>({getTracks:()=>[track]})}},MediaRecorder,Blob,Date,
     setTimeout(callback,delay){assert.equal(delay,4000);timers.push(callback);return timers.length;},clearTimeout(){}};
   vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../src/recorder.js'),'utf8'),ctx);
   const recorder=new ctx.module.exports.AudioRecorder(reason=>{reasons.push(reason);pending=recorder.stop();});

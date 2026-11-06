@@ -22,7 +22,7 @@ await build({ entryPoints: ['src/main.js'], outfile: `${output}/main.js`, bundle
   legalComments: 'inline', banner: {js:'/* Voice Diary Processor; MIT. Third-party notices: THIRD-PARTY-NOTICES.md. */'} });
 for (const f of ['manifest.json', 'styles.css', 'README.md', 'README.zh-CN.md', 'PRIVACY.md', 'LICENSE', 'THIRD-PARTY-NOTICES.md']) await copyFile(f, `${output}/${f}`);
 await mkdir(`${output}/docs`,{recursive:true});
-for(const file of ['SETUP.md','MARKETPLACE.md'])await copyFile(`docs/${file}`,`${output}/docs/${file}`);
+for(const file of ['SETUP.md','MARKETPLACE.md','VOICE-TODOS.md'])await copyFile(`docs/${file}`,`${output}/docs/${file}`);
 const releaseFiles=JSON.parse(await readFile('scripts/release-files.json','utf8'));
 for(const file of releaseFiles.runtime) {
   if(typeof file!=='string'||path.basename(file)!==file)throw new Error('Invalid runtime release file');

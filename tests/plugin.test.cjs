@@ -48,7 +48,7 @@ test('mobile bundle loads and unloads with no Node modules, worker, ASR or HTTP 
   const h=host(true);const app={loadLocalStorage:()=>null,saveLocalStorage(){},vault:{},workspace:{}};
   const p=new h.Plugin(app);await p.onload();
   assert.ok(h.requires.every(id=>id==='obsidian'));assert.equal(p.queue,undefined);assert.equal(p.state.enabled,false);assert.equal(p.settings.apiKey,'');
-  assert.deepEqual(p.commands.map(c=>c.id),['record','save-recording']);p.onunload();await Promise.resolve();
+  assert.deepEqual(p.commands.map(c=>c.id),['record','record-todo','save-recording']);p.onunload();await Promise.resolve();
 });
 test('manual text edits during request prevent applying result to modified note',async()=>{
   const h=host(),file={path:'note.md'};let content='原始选区',replaced=0,finish;
@@ -91,7 +91,7 @@ test('actual MediaRecorder wrapper maps the recorded mime and frees microphone t
   const {extension}=require('../src/recorder');assert.equal(extension('audio/mp4'),'m4a');assert.equal(extension('audio/webm;codecs=opus'),'webm');assert.throws(()=>extension('audio/unknown'));
   let stops=0;
   class MediaRecorder {static isTypeSupported(t){return t==='audio/webm;codecs=opus';}constructor(_s,opts){this.mimeType=opts.mimeType;this.state='inactive';}start(){this.state='recording';}stop(){this.state='inactive';this.ondataavailable({data:new Blob(['valid bytes'])});this.onstop();}}
-  const ctx={module:{exports:{}},require:()=>require('../src/core'),navigator:{mediaDevices:{getUserMedia:async()=>({getTracks:()=>[{stop(){stops++;}}]})}},MediaRecorder,Blob,Date,setTimeout,clearTimeout};
+  const ctx={module:{exports:{}},require:id=>require(id==='./capture'?'../src/capture':'../src/core'),crypto:webcrypto,navigator:{mediaDevices:{getUserMedia:async()=>({getTracks:()=>[{stop(){stops++;}}]})}},MediaRecorder,Blob,Date,setTimeout,clearTimeout};
   vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../src/recorder.js'),'utf8'),ctx);
   const rec=new ctx.module.exports.AudioRecorder();await rec.start();const result=await rec.stop();assert.equal(result.ext,'webm');assert.equal(await result.blob.text(),'valid bytes');assert.equal(stops,1);assert.equal(rec.state,'idle');
 });
@@ -219,6 +219,25 @@ test('failed settings persistence rolls back folder choice and newly inserted ig
   const {p,add}=await desktopFolderPlugin();const existing=add('新目录/历史.webm','history'),original=p.settings.folder;
   p.persist=async()=>{throw Error('disk full');};await assert.rejects(p.applyFolder('folder','新目录'));
   assert.equal(p.settings.folder,original);assert.equal(p.state.jobs[existing.path],undefined);assert.equal(p.queue.busy,false);p.onunload();
+});
+
+test('todo destination is an applied draft and does not change already planned output paths',async()=>{
+  const {h,p,files}=await desktopFolderPlugin();p.managedSenseVoiceRoot='';
+  p.state.jobs['recording.webm']={mode:'todo',target:'old/kept.md',targetFolder:'old',status:'committing'};
+  p.settingTab.display();const text=h.texts.find(x=>x.name==='待办保存目录').text;
+  text.change('我的计划/待办');assert.equal(p.settings.todoFolder,'Voice Diary/Tasks');
+  await p.applyFolder('todoFolder','我的计划/待办');
+  assert.equal(p.settings.todoFolder,'我的计划/待办');assert.ok(files.get('我的计划/待办').children);
+  assert.equal(p.state.jobs['recording.webm'].target,'old/kept.md');p.onunload();
+});
+
+test('todo API opt-in is independent and disabling fails closed when settings cannot be saved',async()=>{
+  const h=host(),p=new h.Plugin({});p.settings=apiSettings();p.settings.todoUseApi=false;p.persist=async()=>{};
+  await p.setTodoApiEnabled(true);assert.equal(p.settings.todoUseApi,true);assert.equal(p.settings.apiEnabled,true);
+  p.persist=async()=>{throw Error('disk');};
+  await assert.rejects(p.setTodoApiEnabled(false),e=>e.code==='storage');assert.equal(p.settings.todoUseApi,false);
+  await assert.rejects(p.setTodoApiEnabled(true));assert.equal(p.settings.todoUseApi,false);
+  assert.equal(p.settings.apiEnabled,true);
 });
 
 test('the compiled plugin preserves a saved custom prompt during load instead of silently selecting a preset',async()=>{

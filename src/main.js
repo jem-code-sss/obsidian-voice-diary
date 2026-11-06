@@ -3,6 +3,8 @@ const {DEFAULTS,PROMPT,DiaryError,Queue,LlmClient,clone,isAudio,folderPath,ensur
 const {MODES,normalizeCorrection}=require('./correction');
 const {DeviceStore}=require('./store');
 const {AudioRecorder}=require('./recorder');
+const {pinCapture,captureName,captureLabel,saveRecordingMetadata}=require('./capture');
+const {TodoListModal}=require('./todo-ui');
 // Desktop dependencies are loaded only inside the engine's methods.
 const {SenseVoiceEngine,SENSEVOICE_LANGUAGES}=require('./sensevoice');
 const {RuntimeAssets}=require('./runtime-assets');
@@ -42,28 +44,33 @@ module.exports=class VoiceDiaryUnified extends Plugin {
       this.asr=new SenseVoiceEngine();this.managedSenseVoiceRoot=this.store.runtimeRoot;
       this.runtimeAssets=new RuntimeAssets({baseRuntimeCacheRoot:this.store.runtimeCacheRoot,version:this.manifest.version||'unversioned'});
     }
-    if(!this.mobile) this.queue=new Queue({vault:this.app.vault,state:this.state,save:()=>this.persist(),
+    if(!this.mobile) this.queue=new Queue({vault:this.app.vault,metadataCache:this.app.metadataCache,state:this.state,save:()=>this.persist(),
       config:()=>this.settings,transcribe:f=>this.transcribeLocal(f),llm:this.llm,closed:()=>this.closed,
       notify:message=>{this.progress=message;this.updateStatus();new Notice(message,6000);}});
     this.addSettingTab(new Settings(this.app,this));
     this.ribbon=this.addRibbonIcon('mic','语音日记：开始／停止录音',()=>void this.toggleRecording());
+    this.todoRibbon=this.addRibbonIcon('clipboard-list','录制待办：开始／停止',()=>void this.toggleRecording('todo'));
     this.status=this.addStatusBarItem();this.status.addClass('vdu-status');this.status.onclick=()=>void this.toggleRecording();
     if(this.mobile){
       this.fab=document.body.createEl('button',{cls:'vdu-mic',attr:{'aria-label':'语音日记：开始／停止录音'}});this.fab.onclick=()=>void this.toggleRecording();
+      this.todoFab=document.body.createEl('button',{cls:'vdu-mic vdu-todo-mic',attr:{type:'button','aria-label':'录制待办'}});this.todoFab.onclick=()=>void this.toggleRecording('todo');
       this.recordIndicator=document.body.createEl('div',{cls:'vdu-record-indicator',attr:{'aria-live':'polite'}});
       this.setupMobileRecordingGuard();
     }
     this.addCommand({id:'record',name:'开始／停止录音',callback:()=>void this.toggleRecording()});
+    this.addCommand({id:'record-todo',name:'录制待办：开始／停止',callback:()=>void this.toggleRecording('todo')});
     this.addCommand({id:'save-recording',name:'重试保存录音',callback:()=>void this.saveRecording().catch(e=>new Notice(safeMessage(e),10000))});
     if(!this.mobile) {
-      this.addCommand({id:'retry',name:'重试失败的语音日记（复用检查点）',callback:()=>void this.retry()});
+      for(const [kind,name] of [['tomorrow','明天待办'],['next-week','下周待办'],['review','待确认待办'],['all','全部未完成待办']])
+        this.addCommand({id:`todos-${kind}`,name:`查看${name}`,callback:()=>this.showTodos(kind)});
+      this.addCommand({id:'retry',name:'重试失败的语音任务（复用检查点）',callback:()=>void this.retry()});
       this.addCommand({id:'retry-current-config',name:'按新配置重新校对因接口或模型变更而暂停的任务',callback:()=>void this.retryCurrentConfig()});
       this.addCommand({id:'pause',name:'暂停自动处理',callback:()=>void this.queue.arm(false).then(()=>this.updateStatus()).catch(e=>new Notice(safeMessage(e)))});
       this.addCommand({id:'process-active',name:'处理当前音频（含历史录音）',callback:()=>void this.enqueue(this.app.workspace.getActiveFile())});
       this.addCommand({id:'status',name:'查看任务进度',callback:()=>this.showStatus()});
       for(const action of this.settings.actions) this.addCommand({id:`text-${action.id}`,name:`选中文字：${action.title}`,editorCallback:editor=>void this.runText(editor,action)});
       this.registerEvent(this.app.workspace.on('file-menu',(menu,file)=>{
-        if(file instanceof TFile&&isAudio(file)) menu.addItem(item=>item.setTitle('转写为语音日记').setIcon('mic').onClick(()=>void this.enqueue(file)));
+        if(file instanceof TFile&&isAudio(file)) menu.addItem(item=>item.setTitle('处理这段录音（日记或待办）').setIcon('mic').onClick(()=>void this.enqueue(file)));
       }));
       this.registerEvent(this.app.workspace.on('editor-menu',(menu,editor)=>{
         if(editor.getSelection()) for(const action of this.settings.actions) menu.addItem(item=>item.setTitle(action.title).onClick(()=>void this.runText(editor,action)));
@@ -74,6 +81,15 @@ module.exports=class VoiceDiaryUnified extends Plugin {
     this.registerInterval(window.setInterval(()=>this.updateStatus(),1000));this.updateStatus();
   }
   persist(){return this.store.save(this.state);}
+  showTodos(kind='tomorrow'){if(!this.closed&&!this.mobile)new TodoListModal(this,kind).open();}
+  async setTodoApiEnabled(enabled) {
+    const previous=this.settings.todoUseApi;this.settings.todoUseApi=!!enabled;
+    try {await this.persist();}catch(e){
+      if(enabled){this.settings.todoUseApi=previous;throw e;}
+      throw new DiaryError('storage','待办 API 已在当前会话关闭，但设置保存失败；请检查磁盘并重试保存，重启前确认关闭状态',{manual:true});
+    }
+    new Notice(enabled?(apiMode(this.settings)==='enabled'?'新待办将使用文字 API 辅助提取；请核对日期和原话。':'待办 API 偏好已保存；文字 API 总开关关闭或配置不完整时仍仅本地提取。'):'待办 API 已关闭；后续不再发送待办提取请求。已发出的请求无法撤回。',8000);
+  }
   async setApiEnabled(enabled) {
     if(enabled&&this.apiConfigTask)throw new DiaryError('busy','正在应用接口配置，请稍候再开启 API');
     if(enabled&&apiMode({...this.settings,apiEnabled:true})==='enabled')llmConfig({...this.settings,apiEnabled:true});
@@ -117,9 +133,9 @@ module.exports=class VoiceDiaryUnified extends Plugin {
     return task;
   }
   async commitFolder(key,value) {
-    const label=key==='folder'?'录音保存目录':'成品笔记目录';
-    if(!['folder','finalFolder'].includes(key))throw new DiaryError('folder','未知的目录设置');
-    if(this.mobile&&key==='finalFolder')throw new DiaryError('folder','成品笔记目录请在电脑端设置');
+    const label=key==='folder'?'录音保存目录':key==='todoFolder'?'待办保存目录':'成品笔记目录';
+    if(!['folder','finalFolder','todoFolder'].includes(key))throw new DiaryError('folder','未知的目录设置');
+    if(this.mobile&&key!=='folder')throw new DiaryError('folder','笔记保存目录请在电脑端设置');
     const next=folderPath(value,label),previous=this.settings[key];
     if(next===previous)return next;
     const existing=this.app.vault.getAbstractFileByPath(next);
@@ -142,7 +158,7 @@ module.exports=class VoiceDiaryUnified extends Plugin {
         try {job.sha=await this.queue.fingerprint(file);}catch {}
       }
       this.settings[key]=next;await this.persist();
-      new Notice(key==='folder'?'录音目录已应用；新目录内已有录音已跳过，可手动选择处理。手机与电脑请使用相同录音目录。':'成品笔记目录已应用；新任务使用此目录，已有文件保留原位。',10000);
+      new Notice(key==='folder'?'录音目录已应用；新目录内已有录音已跳过，可手动选择处理。手机与电脑请使用相同录音目录。':`${label}已应用；新任务使用此目录，已有文件保留原位。`,10000);
       return next;
     }catch(e){this.settings[key]=previous;for(const path of added)delete this.state.jobs[path];throw e;}
     finally {if(locked)this.queue.busy=false;this.updateStatus();}
@@ -211,8 +227,8 @@ module.exports=class VoiceDiaryUnified extends Plugin {
       new Notice('SenseVoice 已检查可用，安装目录已应用');return next;
     }finally{this.preparing=false;this.progress='';this.updateStatus();}
   }
-  async toggleRecording() {
-    if(this.recordingBusy||this.closed) return;
+  async toggleRecording(mode='diary') {
+    if(this.recordingBusy||this.recordingStop||this.saving||this.closed) return;
     if(this.folderTask){new Notice('正在应用目录设置，请稍候再开始录音');return;}
     this.recordingBusy=true;
     try {
@@ -223,10 +239,11 @@ module.exports=class VoiceDiaryUnified extends Plugin {
         if(this.mobile&&document.visibilityState==='hidden')throw new DiaryError('background','请回到 Obsidian 前台再开始录音');
         folderPath(this.settings.folder);
         this.recordFolder=this.settings.folder;
+        this.recordMode=mode==='todo'?'todo':'diary';
         this.recordingInterruption=null;this.interruptionShown=false;
-        await this.recorder.start(this.settings.inputDeviceId);
+        await this.recorder.start(this.settings.inputDeviceId,this.recordMode);
         if(this.mobile&&document.visibilityState==='hidden')await this.interruptRecording('background');
-        if(this.recorder.state==='recording')new Notice(this.mobile?'录音开始，请保持 Obsidian 前台；再次点击即可保存':'录音开始，再次点击麦克风即可保存');
+        if(this.recorder.state==='recording')new Notice(this.recordMode==='todo'?`待办录音开始：${captureLabel(this.recorder.session.capture)}。明天、下周按此日期解释；再次点击保存${this.mobile?'，手机请保持前台':''}`:this.mobile?'录音开始，请保持 Obsidian 前台；再次点击即可保存':'录音开始，再次点击麦克风即可保存',this.recordMode==='todo'?8000:4000);
       }
     } catch(e){new Notice(safeMessage(e),10000);}
     finally{this.recordingBusy=false;this.updateStatus();}
@@ -271,7 +288,7 @@ module.exports=class VoiceDiaryUnified extends Plugin {
     this.saving=true;
     try {
       const pending=this.pendingAudio;
-      pending.recordedAt??=Date.now();
+      pinCapture(pending,Date.now());
       const folder=await ensureFolder(this.app.vault,this.recordFolder||this.settings.folder);
       const bytes=await pending.blob.arrayBuffer();
       if(!bytes.byteLength)throw new DiaryError('empty','录音为空，请检查麦克风');
@@ -280,8 +297,7 @@ module.exports=class VoiceDiaryUnified extends Plugin {
       let file;
       // Preserve a partial write or conflicting file and allocate a fresh path.
       for(let attempt=0;attempt<3;attempt++){
-        if(!pending.path){const d=new Date(pending.recordedAt);const pad=n=>String(n).padStart(2,'0');
-          pending.path=`${folder}/voice-${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}-${crypto.randomUUID()}.${pending.ext}`;}
+        if(!pending.path)pending.path=`${folder}/${captureName(pending,pending.ext)}`;
         file=this.app.vault.getAbstractFileByPath(pending.path);
         if(!file)break;
         let same=false;
@@ -298,8 +314,9 @@ module.exports=class VoiceDiaryUnified extends Plugin {
       }
       if(Array.isArray(file.children)||!matches(await this.app.vault.readBinary(file)))
         throw new DiaryError('save','录音保存校验失败，音频仍在内存；请重试保存，原目标内容不一致时会自动另存新文件');
+      if(pending.mode==='todo')await saveRecordingMetadata(this.app.vault,pending,bytes,pending.path);
       if(this.pendingAudio===pending)this.pendingAudio=null;
-      new Notice(`录音已保存：${file.name}${pending.recovered?'；已另存新文件，原目标已保留':''}${pending.interruption?`；${pending.interruption}，录音已结束`:''}${pending.partial?'；设备中断，末尾可能不完整':''}`,pending.interruption?4000:10000);
+      new Notice(`${pending.mode==='todo'?'待办录音及时间清单':'录音'}已保存：${file.name}${pending.recovered?'；已另存新文件，原目标已保留':''}${pending.interruption?`；${pending.interruption}，录音已结束`:''}${pending.partial?'；设备中断，末尾可能不完整':''}`,pending.interruption?4000:10000);
     } catch(e){new Notice('录音尚未保存，音频仍在内存。请修复目录权限后点击麦克风或“重试保存录音”，暂勿退出 Obsidian',15000);throw e;}
     finally{this.saving=false;this.updateStatus();}
   }
@@ -350,8 +367,8 @@ module.exports=class VoiceDiaryUnified extends Plugin {
     }
   }
   showStatus() {
-    const modal=new Modal(this.app);modal.titleEl.setText('语音日记任务');
-    const labels={ignored:'已跳过',observed:'等待稳定',transcribing:'本地转写',correcting:'文字校对',committing:'保存最终稿',done:'已完成',retry_wait:'等待重试',error:'失败'};
+    const modal=new Modal(this.app);modal.titleEl.setText('语音处理任务');
+    const labels={ignored:'已跳过',observed:'等待稳定',waiting_capture:'等待录音信息同步',transcribing:'本地转写',correcting:'文字校对',extracting:'提取待办',committing:'保存笔记',done:'已完成',retry_wait:'等待重试',error:'失败'};
     const jobs=Object.values(this.state.jobs).filter(j=>j.status!=='ignored');
     modal.contentEl.createEl('p',{text:`自动处理${this.state.enabled?'已开启':'已暂停'}；${apiMode(this.settings)==='enabled'?'文字 API 整理':'仅本地转写'}；${this.progress||'空闲'}。`});
     for(const j of jobs.slice(-30).reverse()) modal.contentEl.createEl('p',{text:`${j.path}：${labels[j.status]||j.status}${j.error?' · '+j.error:''}`});
@@ -362,11 +379,13 @@ module.exports=class VoiceDiaryUnified extends Plugin {
     if(!this.recorder)return;
     const recording=this.recorder.state==='recording';
     const seconds=recording?Math.floor((Date.now()-this.recorder.startedAt)/1000):0;
-    const label=recording?`录音 ${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,'0')} · 点击保存`:
+    const label=recording?`${this.recordMode==='todo'?'待办录音':'录音'} ${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,'0')} · 点击保存`:
       this.pendingAudio?'录音待保存 · 点击重试':this.recorder.state==='starting'?'正在请求麦克风…':this.recordingBusy?'正在保存录音…':this.queue?.busy||this.preparing?this.progress||'正在处理语音日记':`语音日记${this.mobile?' · 仅录音':(this.state.enabled?' · 自动处理开启':' · 自动处理暂停')+(apiMode(this.settings)==='enabled'?' · API 整理':' · 仅本地转写')}`;
     this.status?.setText(label);
     if(this.ribbon){setIcon(this.ribbon,recording?'square':'mic');this.ribbon.setAttribute('aria-label',label);}
     if(this.fab){setIcon(this.fab,recording?'square':'mic');this.fab.setAttribute('aria-label',label);this.fab.classList.toggle('is-recording',recording);}
+    for(const button of [this.todoRibbon,this.todoFab])if(button){setIcon(button,recording?'square':'clipboard-list');button.setAttribute('aria-label',recording||this.pendingAudio?label:'录制待办');}
+    this.todoFab?.classList.toggle('is-recording',recording&&this.recordMode==='todo');
     this.recordIndicator?.setText(recording||this.pendingAudio||this.recordingBusy?label:'');
   }
   async migrate() {
@@ -404,7 +423,7 @@ module.exports=class VoiceDiaryUnified extends Plugin {
     } catch(e){new Notice(safeMessage(e),12000);}
   }
   onunload() {
-    this.closed=true;this.fab?.remove();this.recordIndicator?.remove();
+    this.closed=true;this.fab?.remove();this.todoFab?.remove();this.recordIndicator?.remove();
     if(!this.recorder){void this.store?.close();return;}
     this.recorder.cancelled=true;const closingAsr=this.asr?.close(),closingRuntime=this.runtimeAssets?.close();
     const finish=async()=>{
@@ -430,7 +449,7 @@ class Settings extends PluginSettingTab {
     c.createEl('p',{text:p.mobile?'本设备只录音并保存音频，等待仓库同步到电脑处理。不会运行转写或调用文字模型。':'直接录音、本地 SenseVoice 转写，可选文字 API 整理。原始音频和所有历史稿保留。'});
     const summary=p.mobile?null:c.createEl('p',{cls:'vdu-settings-summary',attr:{'aria-live':'polite'}});
     const groups=p.mobile?[['recording','录音与路径']]:[
-      ['recording','录音与路径'],['local','本地识别'],['api','API 整理'],['text','文字处理'],['tasks','任务与恢复']
+      ['recording','录音与路径'],['local','本地识别'],['api','API 整理'],['todos','语音待办'],['text','文字处理'],['tasks','任务与恢复']
     ];
     const nav=p.mobile?null:c.createEl('div',{cls:'vdu-settings-nav',attr:{role:'tablist','aria-label':'设置分区'}});
     const panels={},tabs=[];
@@ -459,22 +478,33 @@ class Settings extends PluginSettingTab {
       panel.createEl('h3',{text:title,cls:'vdu-settings-section-title',attr:{id:headingId}});
     }
     activate(groups.some(([key])=>key===this.activeSection)?this.activeSection:groups[0][0]);
-    const {recording,local,api,text,tasks}=panels;
+    const {recording,local,api,todos,text,tasks}=panels;
     let apiLabel;
     const refreshApi=()=>{apiLabel?.setText(apiMode(p.settings)==='enabled'?'当前模式：本地转写后调用文字 API 整理。':apiMode(p.settings)==='disabled'?'当前模式：仅本地转写，文字 API 已关闭。':'当前模式：仅本地转写，API 配置未填完整。');summary?.setText(`自动处理：${p.state.enabled?'开启':'暂停'} · ${apiMode(p.settings)==='enabled'?'API 整理':'仅本地转写'}`);p.updateStatus();};
     const save=()=>{refreshApi();void p.persist().catch(e=>new Notice(safeMessage(e)));};
     const field=(container,name,key,desc='',secret=false)=>new Setting(container).setName(name).setDesc(desc).addText(t=>{
       t.setValue(String(p.settings[key]??''));if(secret)t.inputEl.type='password';
       t.onChange(v=>{p.settings[key]=v;save();});});
-    const folderField=(name,key,desc)=>{
+    const folderField=(name,key,desc,container=recording)=>{
       let draft=this.folderDrafts[key]??p.settings[key],input;
-      new Setting(recording).setName(name).setDesc(desc).addText(t=>{input=t;t.setValue(draft).onChange(v=>{draft=v;this.folderDrafts[key]=v;});})
+      new Setting(container).setName(name).setDesc(desc).addText(t=>{input=t;t.setValue(draft).onChange(v=>{draft=v;this.folderDrafts[key]=v;});})
         .addButton(b=>b.setButtonText('应用').onClick(async()=>{try{draft=await p.applyFolder(key,draft);delete this.folderDrafts[key];input.setValue(draft);}catch(e){new Notice(safeMessage(e),10000);}}));
     };
     folderField('录音保存目录','folder','仓库内相对路径，默认 Voice Diary/Recordings。输入后点击应用；手机和电脑需保持一致。');
     if(!p.mobile)folderField('成品笔记目录','finalFolder','仓库内相对路径，默认 Voice Diary/Notes。不存在时自动创建；已有文件不搬动，处理中的任务保留原定位置。');
     new Setting(recording).setName('录音待保存').setDesc(p.pendingAudio?'音频仍在内存，退出前请保存。':'停止录音后自动保存原始音频。').addButton(b=>b.setButtonText('重试保存').onClick(()=>void p.saveRecording().catch(e=>new Notice(safeMessage(e)))));
     if(p.mobile){recording.createEl('p',{text:'成品笔记目录在电脑端设置，保存后同步回手机。请保持 Obsidian 在前台录音；切后台、锁屏或麦克风中断时结束本段并尝试保存，返回后需重新点击录音。本版不支持后台持续收音。'});return;}
+    todos.createEl('p',{cls:'vdu-settings-note',text:'点击“录制待办”说出要做的事情。明天、下周按录制时的实际日期理解，不使用日记的凌晨 4 点分界；不确定的内容放入待确认。'});
+    folderField('待办保存目录','todoFolder','仓库内相对路径，默认 Voice Diary/Tasks。每段待办录音生成一篇笔记，可直接勾选完成；已有笔记不搬动。',todos);
+    new Setting(todos).setName('使用文字 API 提取待办').setDesc('默认关闭，仅在本地提取明确事项。开启后还需要“API 整理”中的总开关和完整配置；仅发送本段转写及录制日期，不发送其他笔记。')
+      .addToggle(t=>t.setValue(p.settings.todoUseApi===true).onChange(async v=>{try{await p.setTodoApiEnabled(v);}catch(e){new Notice(safeMessage(e),10000);t.setValue(p.settings.todoUseApi===true);}}));
+    new Setting(todos).setName('录制待办').setDesc('使用与日记录音相同的录音目录。手机与电脑请同时同步音频和同名 .voice.json 录音信息文件。')
+      .addButton(b=>b.setButtonText('开始／停止待办录音').onClick(()=>void p.toggleRecording('todo')));
+    new Setting(todos).setName('查看待办').addButton(b=>b.setButtonText('明天').onClick(()=>p.showTodos('tomorrow')))
+      .addButton(b=>b.setButtonText('下周').onClick(()=>p.showTodos('next-week')))
+      .addButton(b=>b.setButtonText('待确认').onClick(()=>p.showTodos('review')))
+      .addButton(b=>b.setButtonText('全部未完成').onClick(()=>p.showTodos('all')));
+    todos.createEl('p',{cls:'vdu-settings-note',text:'下周表示周一到周日的范围；没有说清日期时不会猜测截止日。请检查原话后确认，也可改标题、日期或取消事项。本功能不创建系统提醒或日历事件。'});
     new Setting(recording).setName('成品笔记命名').setDesc('只用于尚未开始处理的新任务；已有成品和在途目标不改名。主题从本次文字在本地提取，不额外调用 API。')
       .addDropdown(d=>d.addOption('date-topic','日期 + 日记主题（12.13日记_出游）').addOption('source','原音文件名 + transcript').setValue(p.settings.noteNaming).onChange(v=>{p.settings.noteNaming=v;save();}));
     new Setting(recording).setName('标题包含年份').setDesc('开启后为 2026.12.13日记_出游。日期优先使用原音文件名中的录音开始时间，凌晨 04:00 前归前一天；仅日期无时间时不减天。外部音频回退到文件创建时间，创建时间不可用时使用处理日期。')

@@ -1,4 +1,5 @@
 const {DiaryError}=require('./core');
+const {capturedTime}=require('./capture');
 const MIME_TYPES=[['audio/mp4','m4a'],['audio/webm;codecs=opus','webm'],['audio/webm','webm'],['audio/ogg;codecs=opus','ogg']];
 function extension(mime) {
   if(/mp4/i.test(mime)) return 'm4a';
@@ -9,7 +10,7 @@ function extension(mime) {
 }
 class AudioRecorder {
   constructor(interrupted=()=>{}) {this.interrupted=interrupted;this.state='idle';}
-  async start(deviceId='') {
+  async start(deviceId='',mode='diary') {
     if(this.state!=='idle') return;
     if(!globalThis.navigator?.mediaDevices?.getUserMedia || !globalThis.MediaRecorder)
       throw new DiaryError('microphone','此设备不支持录音，请检查 Obsidian 麦克风权限');
@@ -34,8 +35,8 @@ class AudioRecorder {
         // Track mute means the source cannot provide data, not that the room is quiet.
         track.onmute=()=>interrupt('muted');
       }
-      session.recordedAt=Date.now();
-      this.media.start(500);this.startedAt=session.recordedAt;this.state='recording';
+      session.capture=capturedTime(Date.now());session.mode=mode==='todo'?'todo':'diary';
+      this.media.start(500);this.startedAt=session.capture.recordedAt;this.state='recording';
     } catch(e) {this.release();this.state='idle';throw e instanceof DiaryError?e:new DiaryError('microphone','无法开始录音，请检查麦克风权限及设备');}
   }
   async stop() {
@@ -47,7 +48,7 @@ class AudioRecorder {
         if(settled||this.session!==session) return; settled=true;globalThis.clearTimeout(timer);
         const blob=new Blob(session.chunks,{type:session.mime});
         this.release();this.chunks=[];this.state='idle';
-        resolve(blob.size?{blob,ext:extension(session.mime),partial,recordedAt:session.recordedAt}:null);
+        resolve(blob.size?{blob,ext:extension(session.mime),partial,mode:session.mode,...session.capture}:null);
       };
       media.onstop=()=>{session.stopSeen=true;finish(false);};
       timer=globalThis.setTimeout(()=>finish(true),4000);

@@ -22,7 +22,7 @@ function engineHost(clock,controls={}){
     requestData(){this.ondataavailable?.({data:new Blob(['recorded speech'])});}
     stop(){this.state='inactive';if(!controls.delayStop)this.onstop?.();}
   }
-  const context={module:{exports:{}},require:()=>require('../src/core'),Blob,Date:clockDate(clock),MediaRecorder,
+  const context={module:{exports:{}},require:name=>name==='./capture'?require('../src/capture'):require('../src/core'),Blob,Date:clockDate(clock),MediaRecorder,
     navigator:{mediaDevices:{async getUserMedia(){if(controls.permission)await controls.permission;return{getTracks:()=>[{stop(){}}]};}}},
     setTimeout(callback){timers.push(callback);return timers.length;},clearTimeout(){}};
   vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../src/recorder.js'),'utf8'),context);
@@ -37,7 +37,7 @@ function saveHost(clock,controls={}){
     async readBinary(file){return file.data;}
   };
   const obsidian={Plugin:class{constructor(app){this.app=app;}},PluginSettingTab:class{},Modal:class{},Setting:class{},Notice:class{},Platform:{},setIcon(){}};
-  const context={module:{exports:{}},require:name=>name==='obsidian'?obsidian:sourceRequire(name),Date:clockDate(clock),crypto:webcrypto,
+  const context={module:{exports:{}},require:name=>name==='obsidian'?obsidian:name==='./todo-ui'?{TodoListModal:class{}}:sourceRequire(name),Date:clockDate(clock),crypto:webcrypto,
     Blob,Uint8Array,ArrayBuffer,TextEncoder,TextDecoder,URL,setTimeout,clearTimeout,console};
   vm.runInNewContext(fs.readFileSync(mainPath,'utf8'),context);
   const plugin=new context.module.exports({vault});plugin.settings={folder:'Recordings'};plugin.updateStatus=()=>{};

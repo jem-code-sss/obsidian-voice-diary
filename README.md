@@ -4,9 +4,11 @@ English | [简体中文](README.zh-CN.md)
 
 Turn recordings into Obsidian notes on a Windows computer using local SenseVoice speech recognition. Optionally use a text API to clean up the transcript, or keep the entire transcription workflow offline.
 
-Version: **0.3.2**.
+Version: **0.4.0**.
 
 Choose separate vault folders for original recordings and finished notes. Pair this desktop plugin with [Voice Diary Recorder](https://github.com/jem-code-sss/obsidian-voice-diary-recorder) to record on a phone and process the files on your computer.
+
+Use the separate **Record tasks** entry (`录制待办`) to turn spoken plans into Markdown checkboxes. Task extraction works locally; the optional text API needs its own task opt-in as well as the global API switch. Existing diary recordings are not automatically converted into tasks.
 
 ## Requirements
 
@@ -26,7 +28,7 @@ Install **Voice Diary Processor** from its [official community directory page](h
 
 To install manually:
 
-1. Download `voice-diary-unified-v0.3.2.zip` from the [0.3.2 release](https://github.com/jem-code-sss/obsidian-voice-diary/releases/tag/0.3.2) and extract it.
+1. Download `voice-diary-unified-v0.4.0.zip` from the [0.4.0 release](https://github.com/jem-code-sss/obsidian-voice-diary/releases/tag/0.4.0) and extract it.
 2. Close Obsidian normally. Copy the extracted `voice-diary-unified` folder into your vault's `.obsidian/plugins/` directory. If you use a custom configuration directory, use its `plugins` directory instead.
 3. Reopen Obsidian and enable **Voice Diary Processor** in community plugin settings.
 4. Prepare the local recognition environment below, then apply its directory in the plugin's local recognition settings.
@@ -48,7 +50,7 @@ The plugin does not install, download, or update its dependencies. Its resource 
 
 You can prepare a compatible environment yourself, or run the provided setup script **outside Obsidian**:
 
-1. Download and extract `voice-diary-unified-v0.3.2-source.zip` from the [0.3.2 release](https://github.com/jem-code-sss/obsidian-voice-diary/releases/tag/0.3.2).
+1. Download and extract `voice-diary-unified-v0.4.0-source.zip` from the [0.4.0 release](https://github.com/jem-code-sss/obsidian-voice-diary/releases/tag/0.4.0).
 2. Open PowerShell in the extracted source root, where the `runtime` folder is located.
 3. Review the setup files, then run:
 
@@ -94,6 +96,7 @@ The original SenseVoice project and sherpa-onnx's converted ONNX release are sep
 | Local recognition | Open upstream resources, apply a prepared environment directory, check the model, and choose the recognition language. |
 | API cleanup | Apply an endpoint, model, and device-local Key together, explicitly enable the optional API, and select natural cleanup, faithful correction, or a custom prompt. |
 | Text processing | Correct, translate, polish, or summarize selected note text. Preview the result before applying it. Requires the text API to be enabled and configured. |
+| Voice tasks | Choose the task-note folder, record a task, review tomorrow/next-week/unconfirmed/all unfinished items, and optionally allow API task extraction. The folder defaults to `Voice Diary/Tasks`; API task extraction is off by default. |
 | Tasks and recovery | Enable automatic processing, inspect progress, retry failures, retry with changed API settings, or migrate an older desktop configuration. |
 
 Paths must be relative to the vault. Changing a path affects future recordings or tasks and does not move history. Tasks already in progress keep their assigned destination.
@@ -105,6 +108,18 @@ New tasks default to `MM.DD日记_主题.md`, for example `12.13日记_出游.md
 A diary day runs from 04:00 to the next day's 03:59. A recording started before 04:00 belongs to the previous day; one started at or after 04:00 belongs to the current day. New recordings put their **start time** in the original `voice-YYYY-MM-DD-HHmmss-…` filename, so crossing 04:00 while recording, delayed saving, retries, and synchronization do not change that source date. Source filenames containing a date but no time keep that date. For other audio, the Processor uses file creation time, falling back to processing time if unavailable; creation time can depend on the import or synchronization tool. Naming applies only to new tasks. Existing notes and destinations already assigned to in-progress tasks are preserved.
 
 Automatic processing skips existing recordings the first time it is enabled. To process older audio, use the transcription command in the audio file's menu. The plugin observes vault audio entries in the configured recording folder, waits for incoming files to become stable, and processes them one at a time. It retains original audio and uses source fingerprints to avoid duplicates. Existing finished notes and manual edits are not automatically overwritten.
+
+### Spoken tasks for tomorrow or next week
+
+Choose **Record tasks** (`录制待办`) on the computer or in Recorder 0.4.0. Stop and save as usual. For example, say “明天买牛奶，下周整理出游照片” (buy milk tomorrow; organize trip photos next week). The computer transcribes the recording locally and creates a separate Markdown task note in your chosen task folder. The ordinary microphone continues to create diary recordings.
+
+Each task recording saves both audio and an adjacent `<audio filename>.voice.json` file. Synchronize both files, including `.json`, before expecting processing. The companion file records the recording's actual start date/time, time zone, identity, and audio fingerprint. Missing, incomplete, or mismatched companion data leaves that recording waiting; the plugin does not guess its date from arrival time. Keep these files together when moving or backing up a recording.
+
+Relative dates use the **actual local date when recording started**, independently of the diary's 04:00 rule. At 03:59 on November 7, a diary belongs to November 6, but “tomorrow” in a task recording means November 8. “Next week” means the following Monday–Sunday range; it does not invent a deadline. Saved dates stay fixed after late synchronization or a time-zone change. The tomorrow and next-week views use the computer's current local date to select from those saved dates.
+
+Open the **Voice tasks** settings section or the task-view commands to review tomorrow, next week, items needing confirmation, or all confirmed unfinished items. A note such as `2026.11.07待办_153000_a1b2c3d4.md` contains standard Markdown checkboxes, the original wording, dates, an audio link, and the full transcript. Checkboxes in the note are the completion record. You can confirm, edit, or cancel an item; edits made after opening a view require a refresh before that view can save over them. Conflicting copies are shown for manual review. The plugin does not create calendar events, notifications, or system reminders.
+
+Local extraction recognizes explicit Chinese action and date expressions conservatively. Ambiguous dates, quotations, corrections, and negations can require confirmation; neither recognition nor extraction guarantees that every intention is captured. Review the source transcript, especially for important tasks. Long or overly complex input may be limited and marked for review. To use the text API for new task recordings, enable and configure the global API **and** turn on the separate task API option, which defaults off. The request contains this recording's transcript and recording-date context, without other notes or original audio. See the [voice-task guide](docs/VOICE-TODOS.md) for examples and recovery steps.
 
 ### Local-only mode and optional API cleanup
 
@@ -123,7 +138,7 @@ Turning the API off retains its saved configuration. It stops later requests but
 Install [Voice Diary Recorder](https://github.com/jem-code-sss/obsidian-voice-diary-recorder) on the phone and this Processor on the Windows computer. Syncthing is one option, not a requirement: Obsidian Sync or another reliable vault synchronization tool can also transfer the files. The plugins do not provide a synchronization service.
 
 1. Configure the same vault-relative recording folder on both devices. Their absolute vault paths may differ.
-2. Synchronize both the recordings and the finished-note folders in both directions. Ensure that audio files are not excluded. Avoid using multiple synchronization tools to manage the same folders.
+2. Synchronize the recordings, finished-note, and task-note folders in both directions. For voice tasks, include the adjacent `.voice.json` files as well as audio. Avoid using multiple synchronization tools to manage the same folders.
 3. Install each plugin on its intended device. Keep the Python environment, API credentials, and desktop task data outside the shared folders.
 4. On the phone, keep Obsidian in the foreground, record a short sample, stop, and play it back. Wait for the saved file to synchronize.
 5. Keep the computer and Obsidian running, with automatic processing enabled on that computer only. After the audio is stable, the Processor creates a diary note such as `12.13日记_出游.md` with a source audio link, using your selected naming mode.
@@ -138,6 +153,8 @@ Both recording entry points verify saved bytes. If a failed write leaves a trunc
 ## Privacy, external files, and process execution
 
 Original recordings and finished notes remain in your selected vault folders and follow your synchronization and backup settings. The plugin has no telemetry.
+
+Task companion files also follow vault synchronization. They expose the recording time, time zone, random recording ID, audio filename, size, and SHA-256 fingerprint, but do not contain an API Key or transcript. Task notes contain personal plans and the full transcript; treat them as private notes. A fingerprint checks file consistency and is not encryption or proof of who created a recording.
 
 Desktop configuration, API credentials, and task checkpoints are stored **outside the vault**, under the current user's application data directory. A task checkpoint can contain transcript text and processed sections. On Windows, the device file is:
 
@@ -191,6 +208,7 @@ See [validation notes](VALIDATION.md) for coverage, local checks, and remaining 
 
 - Transcription processes saved files, rather than providing live captions. Each task starts Python and loads the model.
 - Noise, accents, proper nouns, and long sentences can still cause recognition errors. Rejecting completely silent input is not full voice activity detection.
+- Voice-task extraction is an aid to review, not a promise that every action or date is understood. It does not schedule reminders; the mobile Recorder only records, while Processor provides the task views.
 - Device-local task state and credentials do not synchronize. Prepare a new environment and configuration when moving to another computer.
 - If local pending content and recovery checkpoints are completely lost, an older source-marked note may be a manual edit or a historical partial write. The plugin preserves it; check against the recording and save a separate replacement if needed.
 - Local preparation depends on access to the upstream services and on local permissions.

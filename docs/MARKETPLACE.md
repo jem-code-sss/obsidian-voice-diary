@@ -5,7 +5,7 @@
 - [Voice Diary Processor](https://community.obsidian.md/plugins/voice-diary-unified)：电脑端录音处理与本地识别。
 - [Voice Diary Recorder](https://community.obsidian.md/plugins/voice-diary-recorder)：手机或桌面前台录音。
 
-目录条目公开、自动审核和客户端可安装是分别确认的状态；最新审核结果及安装入口以各自官方页面为准。0.3.2 包含安全修订与日记命名改进，提供完整英文 README，并保留中文指南；版本审核状态以官方页面显示为准。
+目录条目公开、自动审核和客户端可安装是分别确认的状态；最新审核结果及安装入口以各自官方页面为准。0.4.0 增加独立语音待办录音、时间清单、保守本地提取与 Markdown 任务查看，提供英文 README 和中文指南；新版本审核结果以官方页面显示为准。
 
 两个插件分别发布、分别申请：
 
@@ -14,9 +14,11 @@
 | Voice Diary Processor | https://github.com/jem-code-sss/obsidian-voice-diary | voice-diary-unified | true |
 | Voice Diary Recorder | https://github.com/jem-code-sss/obsidian-voice-diary-recorder | voice-diary-recorder | false |
 
-发布 `0.3.2` 等新版本时，tag 必须与 manifest.version 一致、不带 `v` 前缀。每个 Release 须提供 `main.js`、`manifest.json` 与 `styles.css` 标准附件。源码 ZIP 和手动安装 ZIP 不能替代这些附件。
+发布 `0.4.0` 等新版本时，tag 必须与 manifest.version 一致、不带 `v` 前缀。每个 Release 须提供 `main.js`、`manifest.json` 与 `styles.css` 标准附件。源码 ZIP 和手动安装 ZIP 不能替代这些附件。
 
 Processor 的 Python runner 已内置在 `main.js` 中；市场安装不依赖额外复制 `runtime/` 文件夹。环境与模型由用户手动准备，插件仅提供官方资源及说明链接，不安装或更新依赖。
+
+待办功能不改变两端边界：Recorder 仅用浏览器录音与仓库保存音频、`.voice.json`，不导入桌面识别依赖、不调用 API；Processor 继续仅桌面加载。待办提取默认离线，可选文字请求须同时满足全局 API 开关与单独的待办 API 开关。不会读取通讯录、抓取无关笔记、创建系统提醒或日历事件。任务笔记、录音清单的同步与隐私说明见 [语音待办](VOICE-TODOS.md) 和 [隐私说明](../PRIVACY.md)。
 
 按目前[官方提交流程](https://docs.obsidian.md/Plugins/Releasing/Submit%20your%20plugin)，拥有者需要：
 

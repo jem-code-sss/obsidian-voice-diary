@@ -1,7 +1,12 @@
 // Queue and commit rules are independent of Obsidian and exercised with a fake vault.
 const {LEGACY_PROMPT: PROMPT,correctionPlan,chunkPrompt,joinCorrected}=require('./correction');
 const {namingSnapshot,diaryFilename}=require('./naming');
+const {isTodoAudio,metadataPath,parseRecordingMetadata}=require('./capture');
+const {extractLocal,todoPrompt,validateTodoResponse,LIMITS}=require('./todos');
+const {renderTodoNote,matchesTodoNote,todoFilename}=require('./todo-notes');
+const {todoNotePaths}=require('./todo-discovery');
 const DEFAULTS = { folder:'Voice Diary/Recordings', finalFolder:'Voice Diary/Notes', language:'zh', senseVoiceRoot:'',
+  todoFolder:'Voice Diary/Tasks',todoUseApi:false,
   noteNaming:'date-topic',titleIncludeYear:false,diaryDayStartHour:4,
   inputDeviceId:'', apiEnabled:false, apiUrl:'', apiKey:'', model:'', timeoutSeconds:120, disableThinking:true,
   prompt:PROMPT, correctionMode:'natural', chunkChars:4000, targetLanguage:'简体中文',
@@ -15,6 +20,10 @@ class DiaryError extends Error {
 }
 const clone = value => JSON.parse(JSON.stringify(value));
 const signature = f => `${f.stat.size}:${f.stat.mtime}`;
+// Names and JSON key order may change during a rename or a retry save. Only
+// recording identity, verified audio and the original local clock anchor matter.
+const captureIdentity = capture => JSON.stringify(['version','kind','mode','recordingId','recordedAt','localDate','localTime','utcOffsetMinutes','timeZone','audioSha256','byteLength','complete'].map(key=>capture[key]));
+const namedRecordingId = path => /(?:^|\/)todo-\d{4}-\d{2}-\d{2}-\d{6}-([a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12})\.[^/.]+$/i.exec(path)?.[1];
 const isAudio = f => /\.(m4a|mp3|wav|webm|ogg|oga|opus|flac|aac|3gp)$/i.test(f.path);
 function folderPath(value,label='目录') {
   const p=typeof value==='string'?value.trim().replace(/\\/g,'/').replace(/\/+$/,''):'';
@@ -132,9 +141,9 @@ class LlmClient {
     };
     this.active=false;
   }
-  async complete(config, text, prompt) {
+  async complete(config, text, prompt, allowed=()=>true) {
     requireApi(config);
-    if(!this.canRequest())throw new DiaryError('api-disabled','文字 API 已关闭，未发送请求', {manual:true});
+    if(!this.canRequest()||!allowed())throw new DiaryError('api-disabled','文字 API 已关闭，未发送请求', {manual:true});
     if(this.active) throw new DiaryError('inflight','前一次接口请求尚未结束，请稍后重试', {manual:true});
     const {url,body}=llmConfig(config);
     this.active=true;
@@ -143,7 +152,7 @@ class LlmClient {
     let timer;
     // requestUrl cannot abort. Keep the busy guard until the underlying promise settles.
     const pending=Promise.resolve().then(()=>{
-      if(!this.canRequest())throw new DiaryError('api-disabled','文字 API 已关闭，未发送请求', {manual:true});
+      if(!this.canRequest()||!allowed())throw new DiaryError('api-disabled','文字 API 已关闭，未发送请求', {manual:true});
       return this.request({url,method:'POST',headers,
         body:JSON.stringify({...body,messages:[{role:'system',content:prompt},{role:'user',content:text}]}),throw:false});
     });
@@ -172,8 +181,8 @@ class LlmClient {
   }
 }
 class Queue {
-  constructor({vault,state,save,transcribe,llm,config,notify=()=>{},now=Date.now,closed=()=>false}) {
-    Object.assign(this,{vault,state,save,transcribe,llm,config,notify,now,closed});
+  constructor({vault,state,save,transcribe,llm,config,metadataCache,notify=()=>{},now=Date.now,closed=()=>false}) {
+    Object.assign(this,{vault,state,save,transcribe,llm,config,metadataCache,notify,now,closed});
     this.observed=new Map(); this.busy=false;
   }
   files() {
@@ -201,6 +210,9 @@ class Queue {
           const j={path:f.path,status:'ignored',sig:signature(f)};
           this.state.jobs[f.path]=j;
           try {j.sha=await this.fingerprint(f);} catch {}
+          if(j.sha&&(isTodoAudio(f)||this.vault.getAbstractFileByPath(metadataPath(f.path)))){
+            j.mode='todo';try{j.capture=await this.recordingCapture(f,j.sha);}catch{}
+          }
         }
         this.state.initialized=true;
       }
@@ -234,21 +246,26 @@ class Queue {
     if(count)await this.save();
     return count;
   }
-  async findFinal(sha) {
+  async findFinal(sha,mode='diary',recordingId) {
     // Metadata permits recovery even when final creation succeeded before state persistence.
     // Pending writes are different: their persisted expected digest is stronger
     // evidence than a marker followed by a truncated, nonempty first sentence.
-    const related=Object.values(this.state.jobs).filter(job=>job.sha===sha);
+    const related=Object.values(this.state.jobs).filter(job=>job.sha===sha&&(job.mode||'diary')===mode);
     const excluded=new Set(related.flatMap(job=>Array.isArray(job.incompleteOutputs)?job.incompleteOutputs:[]));
-    for(const f of this.vault.getFiles().filter(f=>/\.md$/i.test(f.path))) {
+    const candidates=mode==='todo'?todoNotePaths(this.vault,this.state,this.config(),this.metadataCache).map(path=>this.vault.getAbstractFileByPath(path)).filter(Boolean):this.vault.getFiles().filter(f=>/\.md$/i.test(f.path));
+    for(const f of candidates) {
       if(excluded.has(f.path))continue;
       const body=await this.vault.read(f);
-      if(!matchesFinal(body,sha))continue;
+      if(!(mode==='todo'?matchesTodoNote(body,sha,recordingId):matchesFinal(body,sha)))continue;
       const pending=related.filter(job=>job.status!=='done'&&job.output===f.path);
       let complete=true;
       for(const job of pending) {
+        // Task notes have a validated closing identity marker after the entire
+        // transcript. A surviving complete note may already have user checkbox
+        // edits after creation; a stale expected digest must not clone it.
+        if(mode==='todo')continue;
         const expected=job.pendingFinal?.path===f.path?job.pendingFinal.sha256:
-          typeof job.corrected==='string'?await sha256(finalContent(job)):null;
+          mode==='todo'&&job.todoResult?await sha256(renderTodoNote(job)):typeof job.corrected==='string'?await sha256(finalContent(job)):null;
         if(expected&&await sha256(body)!==expected){complete=false;break;}
       }
       if(complete)return f.path;
@@ -274,7 +291,10 @@ class Queue {
         if(!f.stat.size||this.now()-seen.at<30000) continue;
         try {await this.process(f,j,sig);} catch(e) {
           if(this.closed()) break;
-          if(e.code==='changed') {
+          if(e.code==='capture-wait') {
+            j.status='waiting_capture';j.error=e.message;j.next=this.now()+30000;
+            await this.save();continue;
+          } else if(e.code==='changed') {
             this.reset(j);this.observed.delete(f.path);j.status='observed';j.next=0;
           } else {
             j.tries=(j.tries||0)+1;
@@ -290,16 +310,129 @@ class Queue {
       }
     } finally {this.busy=false;}
   }
-  reset(j) { for(const k of ['sha','raw','chunks','parts','corrected','target','output','id','sig','correctionConfig','processingMode','stage','targetFolder','naming','pendingFinal','incompleteOutputs']) delete j[k]; }
+  reset(j) { for(const k of ['sha','raw','chunks','parts','corrected','target','output','id','sig','correctionConfig','processingMode','stage','targetFolder','naming','pendingFinal','incompleteOutputs','mode','capture','todoResult','todoConfig','captureSignature']) delete j[k]; }
   useLocalTranscript(j) {
     j.processingMode='local';j.stage='local_transcribed';j.corrected=j.raw;
     for(const key of ['chunks','parts','correctionConfig'])delete j[key];
     j.status='committing';
   }
+  async recordingCapture(file,sha,optional=false,expectedRecordingId) {
+    const wait=(captureMissing=false)=>new DiaryError('capture-wait','等待录音与时间清单同步完整；请保持 .voice.json 和原录音一起同步',{captureMissing});
+    const direct=this.vault.getAbstractFileByPath(metadataPath(file.path));
+    const read=async(candidate,allowRename=false)=>{
+      if(!candidate||Array.isArray(candidate.children)||candidate.stat?.size>8192)throw wait();
+      const before=candidate.stat?signature(candidate):null;
+      const body=await this.vault.read(candidate);
+      if(typeof body!=='string'||body.length>8192)throw wait();
+      const parsed=parseRecordingMetadata(body,file,sha,{allowRename});
+      const current=this.vault.getAbstractFileByPath(candidate.path);
+      if(!current||Array.isArray(current.children)||(before&&signature(current)!==before))throw wait();
+      return parsed;
+    };
+    if(direct){try{return await read(direct,true);}catch{throw wait();}}
+    // A user may rename the audio before the companion metadata. Only look at
+    // bounded companion files in that same folder and require matching bytes.
+    const parent=file.path.slice(0,file.path.lastIndexOf('/')+1);
+    const candidates=this.vault.getFiles().filter(f=>f.path.startsWith(parent)&&!f.path.slice(parent.length).includes('/')&&f.path.endsWith('.voice.json'));
+    const matches=new Map(),name=file.path.slice(parent.length),identity=expectedRecordingId||namedRecordingId(file.path);
+    for(const candidate of candidates){try{
+      const capture=await read(candidate,true);
+      // A fresh standard filename identifies its own recording. An unrelated
+      // capture with identical bytes is not its missing sidecar. Retry saves
+      // have a fresh filename UUID but can bind through an exact audioName.
+      if(identity&&capture.recordingId.toLowerCase()!==identity.toLowerCase()&&capture.audioName!==name)continue;
+      matches.set(captureIdentity(capture),capture);
+    }catch{}}
+    if(matches.size===1)return matches.values().next().value;
+    if(optional&&!matches.size)return null;
+    throw wait(matches.size===0);
+  }
+  async processTodo(file,j,sig,knownCapture) {
+    let capture=knownCapture;
+    try{capture||=await this.recordingCapture(file,j.sha,false,j.capture?.recordingId);}catch(error){
+      // A valid manifest's recording ID always wins over content-only recovery:
+      // two independent captures can contain identical bytes on different days.
+      // A previously complete note remains usable if its manifest is gone.
+      if(error.code!=='capture-wait'||!error.captureMissing)throw error;
+      const recovered=await this.findFinal(j.sha,'todo',j.capture?.recordingId||namedRecordingId(file.path));
+      if(recovered)return this.finish(j,recovered);
+      throw error;
+    }
+    // Freeze the capture reference. A later metadata change cannot silently
+    // reinterpret a previously transcribed "tomorrow".
+    const captureSignature=await sha256(captureIdentity(capture));
+    if(j.captureSignature&&j.captureSignature!==captureSignature)
+      throw new DiaryError('capture-changed','录音时间清单已改变；已保留转写并暂停，请核对清单后恢复原时间信息', {manual:true});
+    j.capture=capture;j.captureSignature=captureSignature;
+    const recovered=await this.findFinal(j.sha,'todo',capture.recordingId);
+    if(recovered)return this.finish(j,recovered);
+    const duplicate=Object.values(this.state.jobs).find(x=>x!==j&&x.sha===j.sha&&x.status==='ignored'&&x.capture?.recordingId===capture.recordingId);
+    if(duplicate&&!j.manual){j.status='ignored';await this.save();return;}
+    if(!j.target){
+      j.targetFolder=folderPath(this.config().todoFolder??DEFAULTS.todoFolder,'待办保存目录');
+      j.target=`${j.targetFolder}/${todoFilename(capture)}`;
+      await this.save();
+    }
+    await ensureFolder(this.vault,j.target.slice(0,j.target.lastIndexOf('/')));
+    if(this.closed())return;
+    if(!j.processingMode){j.processingMode=this.config().todoUseApi===true&&apiMode(this.config())==='enabled'?'api':'local';await this.save();}
+    if(!j.raw){
+      j.status='transcribing';await this.save();this.notify(`正在本地转写待办：${file.name}`);
+      const raw=await this.transcribe(file);
+      if(typeof raw!=='string'||!raw.trim())throw new DiaryError('empty','没有识别到有效语音', {manual:true});
+      if(await this.fingerprint(file,sig)!==j.sha)throw new DiaryError('changed','录音已改变');
+      j.raw=raw.trim();await this.save();
+    }
+    if(this.closed())return;
+    const verifyCapture=async()=>{
+      if(await sha256(captureIdentity(await this.recordingCapture(file,j.sha,false,capture.recordingId)))!==captureSignature)
+        throw new DiaryError('capture-changed','录音时间清单已改变；完整转写保留，请核对后重试', {manual:true});
+    };
+    await verifyCapture();
+    if(!j.todoResult){
+      // Do not split into independent requests: corrections and cancellation
+      // must retain their whole-recording context. Long input stays local.
+      const allowed=()=>!this.closed()&&this.config().todoUseApi===true&&apiMode(this.config())==='enabled';
+      let result;
+      if(j.processingMode==='api'&&allowed()&&j.raw.length<=LIMITS.text){
+        j.status='extracting';await this.save();
+        const cfg=clone(this.config());
+        this.notify(`正在整理语音待办：${file.name}`);
+        try{
+          const answer=await this.llm.complete(cfg,j.raw,todoPrompt(capture),allowed);
+          if(this.closed())return;
+          result=allowed()?validateTodoResponse(answer,j.raw,capture):extractLocal(j.raw,capture);
+        }catch(error){
+          if(this.closed())return;
+          if(allowed())throw error;
+          result=extractLocal(j.raw,capture);
+        }
+      }else result=extractLocal(j.raw,capture);
+      // IDs derive from one recording plus item position/evidence, never model
+      // supplied IDs or paths. Retries reuse the persisted result unchanged.
+      for(let index=0;index<result.items.length;index++){
+        const item=result.items[index];
+        item.id='vdt-'+(await sha256(`${capture.recordingId}\n${j.sha}\n${index}\n${item.evidence}`)).slice(0,20);
+      }
+      j.todoResult=result;j.status='committing';await this.save();
+    }
+    if(this.closed())return;
+    if(await this.fingerprint(file,sig)!==j.sha)throw new DiaryError('changed','录音已改变');
+    await verifyCapture();
+    return this.commitFinal(j,renderTodoNote(j));
+  }
   async process(file,j,sig) {
     const sha=await this.fingerprint(file,sig);
     if(j.sha&&j.sha!==sha) this.reset(j);
     j.sha=sha;j.sig=sig;j.id||=globalThis.crypto.randomUUID();
+    if(j.mode==='todo'||isTodoAudio(file)||this.vault.getAbstractFileByPath(metadataPath(file.path))) {
+      j.mode='todo';return this.processTodo(file,j,sig);
+    }
+    const capture=await this.recordingCapture(file,sha,true);
+    if(capture){j.mode='todo';return this.processTodo(file,j,sig,capture);}
+    // A renamed already-finished task recording must not become a new diary.
+    const priorTodo=await this.findFinal(sha,'todo');
+    if(priorTodo){j.mode='todo';return this.finish(j,priorTodo);}
     const recovered=await this.findFinal(sha);
     if(recovered) {j.output=recovered;j.status='done';delete j.error;await this.save();return;}
     const duplicate=Object.values(this.state.jobs).find(x=>x!==j&&x.sha===sha&&x.status==='ignored');
@@ -381,15 +514,17 @@ class Queue {
     if(this.closed()) return;
     if(await this.fingerprint(file,sig)!==sha) throw new DiaryError('changed','录音已改变');
     if(!j.target){j.target=`${destination}/${diaryFilename(j.naming,j.corrected||j.raw)}`;await this.save();}
-    const canonical=j.target;
-    const final=finalContent(j);
+    return this.commitFinal(j,finalContent(j));
+  }
+  async commitFinal(j,final) {
+    const sha=j.sha,canonical=j.target;
     const expectedHash=await sha256(final);
     // Create only; never modify, trash, rename or remove any existing note/audio.
     let target=j.output||canonical;
     if(j.output) {
       const existing=this.vault.getAbstractFileByPath(target);
       if(existing) {
-        if(!Array.isArray(existing.children)&&await this.vault.read(existing)===final){j.status='done';delete j.error;await this.save();return;}
+        if(!Array.isArray(existing.children)&&await this.vault.read(existing)===final)return this.finish(j,target);
         await this.preserveIncomplete(j,target);
       }
     }
@@ -407,6 +542,11 @@ class Queue {
       // A successful promise is insufficient: read back the complete content.
       // The same comparison also recovers a full write followed by rejection.
       if(body===final){verified=true;break;}
+      if(failure&&j.mode==='todo'&&typeof body==='string'&&matchesTodoNote(body,sha,j.capture.recordingId)){
+        // A complete task note created by a competing sync/processor is the
+        // same recording's canonical record; keep its manual completion state.
+        final=body;verified=true;break;
+      }
       await this.preserveIncomplete(j,target);
       const ownMarker=`voice_diary_job_id: ${JSON.stringify(j.id)}\n`;
       if(!failure||(body?.includes(ownMarker)&&matchesFinal(body,sha))||(typeof body==='string'&&final.startsWith(body))) {
@@ -416,10 +556,17 @@ class Queue {
     }
     const saved=this.vault.getAbstractFileByPath(target);
     if(!verified||!saved||await this.vault.read(saved)!==final)throw new DiaryError('save','最终稿完整内容校验未通过；完整转写检查点保留', {manual:true});
-    j.output=target;j.status='done';delete j.error;await this.save();
+    return this.finish(j,target,true);
+  }
+  async finish(j,target,announce=false) {
+    j.output=target;j.status='done';delete j.error;delete j.errorCode;delete j.next;await this.save();
     // A completed record and the marked final remain sufficient for future deduplication.
-    for(const k of ['raw','chunks','parts','corrected','correctionConfig','pendingFinal']) delete j[k];
-    await this.save();this.notify(`语音日记完成：${target}`);
+    for(const k of ['raw','chunks','parts','corrected','correctionConfig','pendingFinal','todoResult','todoConfig']) delete j[k];
+    if(j.mode==='todo'){
+      this.state.todoNotes=[...new Set([...(this.state.todoNotes||[]),target])];
+      this.state.todoFolders=[...new Set([...(this.state.todoFolders||[]),target.slice(0,target.lastIndexOf('/'))])];
+    }
+    await this.save();if(announce)this.notify(`${j.mode==='todo'?'语音待办':'语音日记'}完成：${target}`);
   }
 }
 module.exports={DEFAULTS,PROMPT,DiaryError,Queue,LlmClient,clone,signature,isAudio,folderPath,ensureFolder,transcriptPath,splitText,sha256,finalContent,matchesFinal,llmConfig,apiMode,normalizeApi,requireApi,apiOrigin,validateApiUrl};
